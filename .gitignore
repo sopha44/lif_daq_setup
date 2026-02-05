@@ -1,0 +1,7 @@
+/references/
+/logs/
+/data/
+/hardware/__pycache__/
+/tests/__pycache__/
+/utils/__pycache__/
+/__pycache__/
