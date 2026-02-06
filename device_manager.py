@@ -110,6 +110,61 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"Failed to connect to device on board {board_num}: {e}")
             raise
+    
+    def setup_daq(self, board_num: int, name: str, sample_rate: int, 
+                  low_chan: int, high_chan: int, duration_seconds: float) -> dict:
+        """
+        Setup a single DAQ device with its configuration.
+        
+        Args:
+            board_num: Board number (0, 1, 2)
+            name: Friendly name for logging (e.g., "USB-1608GX-2AO", "USB-TEMP")
+            sample_rate: Sample rate in Hz
+            low_chan: First channel number
+            high_chan: Last channel number
+            duration_seconds: Acquisition duration for buffer sizing
+        
+        Returns:
+            Dictionary containing device configuration:
+                - device: Device object (MCCDevice or MCCTemperatureDevice)
+                - name: Friendly name
+                - sample_rate: Sample rate in Hz
+                - low_chan: First channel
+                - high_chan: Last channel
+                - points_per_channel: Expected samples per channel
+                - num_channels: Number of channels
+                - data: Empty list for data collection
+                - timestamps: Empty list for timestamps
+        """
+        logger.info(f"Setting up Board {board_num} ({name})...")
+        
+        # Connect to device
+        daq = self.connect_mcc_device(board_num=board_num)
+        logger.info(f"  Connected: {daq.info.product_name}")
+        
+        # Calculate points per channel
+        points_per_channel = int(sample_rate * duration_seconds)
+        num_channels = high_chan - low_chan + 1
+        
+        logger.info(f"  Config: {sample_rate} Hz, Channels {low_chan}-{high_chan} ({num_channels} channels)")
+        logger.info(f"  Expected samples per channel: {points_per_channel}")
+        
+        # Create configuration dictionary
+        config = {
+            'device': daq,
+            'name': name,
+            'sample_rate': sample_rate,
+            'low_chan': low_chan,
+            'high_chan': high_chan,
+            'points_per_channel': points_per_channel,
+            'num_channels': num_channels,
+            'data': [],
+            'timestamps': []
+        }
+        
+        logger.info(f"  Board {board_num} setup complete")
+        
+        return config
 
     def get_device(self, board_num: int) -> Optional[object]:
         """

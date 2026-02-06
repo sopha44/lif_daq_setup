@@ -164,8 +164,8 @@ class MCCDevice:
             
             self.is_scanning = True
             
-            # Reset last read index
-            self.last_read_index = -self.num_chans
+            # Reset last read index to -1 so first read starts from index 0
+            self.last_read_index = -1
             
             logger.info(f"Background scan started on board {self.board_num}")
             
@@ -236,6 +236,7 @@ class MCCDevice:
         Read new data since last read (incremental reading for long acquisitions).
         Returns data organized by scans (each scan contains values from all channels).
         Automatically tracks last read position to avoid duplicates.
+        Handles circular buffer wraparound correctly.
         
         Returns:
             List of scans, where each scan is a list of channel values
@@ -245,32 +246,50 @@ class MCCDevice:
         
         status, curr_count, curr_index = self.get_status()
         
-        if curr_count == 0 or curr_index == self.last_read_index:
+        if curr_count == 0:
+            return []  # No data yet
+        
+        # Check if index hasn't changed
+        if curr_index == self.last_read_index:
             return []  # No new data
         
         scans = []
         
-        # Read from last_read_index to curr_index in channel-sized chunks
-        for scan_start in range(self.last_read_index + self.num_chans, curr_index + 1, self.num_chans):
-            if scan_start >= 0:  # Skip negative indices
-                scan_data = []
-                for ch_offset in range(self.num_chans):
-                    idx = scan_start + ch_offset
-                    if idx <= curr_index:
-                        if self.scan_options & ScanOptions.SCALEDATA:
-                            # Data already in engineering units
-                            value = self.ctypes_array[idx]
-                        else:
-                            # Convert to engineering units
-                            value = ul.to_eng_units(
-                                self.board_num,
-                                self.ai_range,
-                                self.ctypes_array[idx]
-                            )
-                        scan_data.append(value)
+        # Handle circular buffer wraparound
+        # We need to read from last_read_index+1 to curr_index (inclusive)
+        # But account for wraparound at total_count
+        
+        # Calculate number of new samples (accounting for circular buffer)
+        if curr_index >= self.last_read_index:
+            # No wraparound  
+            new_samples = curr_index - self.last_read_index
+        else:
+            # Wraparound occurred
+            new_samples = (self.total_count - self.last_read_index - 1) + curr_index + 1
+        
+        # Read new scans
+        num_new_scans = new_samples // self.num_chans
+        
+        for scan_num in range(num_new_scans):
+            scan_data = []
+            for ch_offset in range(self.num_chans):
+                # Calculate index with wraparound
+                idx = (self.last_read_index + 1 + scan_num * self.num_chans + ch_offset) % self.total_count
                 
-                if len(scan_data) == self.num_chans:
-                    scans.append(scan_data)
+                if self.scan_options & ScanOptions.SCALEDATA:
+                    # Data already in engineering units
+                    value = self.ctypes_array[idx]
+                else:
+                    # Convert to engineering units
+                    value = ul.to_eng_units(
+                        self.board_num,
+                        self.ai_range,
+                        self.ctypes_array[idx]
+                    )
+                scan_data.append(value)
+            
+            if len(scan_data) == self.num_chans:
+                scans.append(scan_data)
         
         # Update last read index
         self.last_read_index = curr_index
