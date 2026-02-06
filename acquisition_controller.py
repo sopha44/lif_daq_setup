@@ -3,7 +3,7 @@ Acquisition Controller for LIF DAQ system.
 Orchestrates data acquisition workflows across multiple DAQ devices.
 """
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -12,6 +12,7 @@ from utils.setup_mcc_path import setup_mcc_path
 setup_mcc_path()  # Add MCC DLL path before importing mcculw
 
 from device_manager import DeviceManager
+from signal_processor import SignalProcessor
 from utils.logging_setup import get_logger
 import config
 
@@ -31,10 +32,12 @@ class AcquisitionController:
         self.daq_configs = {}
         self.acquisition_start_time = None
         self.acquisition_folder = None
+        self.signal_processors = {}  # Signal processors for each DAQ
         logger.info("Acquisition Controller initialized")
     
     def setup_daq(self, board_num: int, name: str, sample_rate: int, 
-                  low_chan: int, high_chan: int, duration_seconds: float):
+                  low_chan: int, high_chan: int, duration_seconds: float,
+                  enable_processing: bool = True):
         """
         Setup a single DAQ device with its configuration.
         Delegates to DeviceManager for device configuration.
@@ -46,6 +49,7 @@ class AcquisitionController:
             low_chan: First channel number
             high_chan: Last channel number
             duration_seconds: Acquisition duration for buffer sizing
+            enable_processing: Whether to create a signal processor for this DAQ (default: True)
         """
         # Delegate to DeviceManager for configuration
         config = self.manager.setup_daq(
@@ -59,6 +63,16 @@ class AcquisitionController:
         
         # Store configuration for acquisition control
         self.daq_configs[board_num] = config
+        
+        # Create signal processor for this DAQ if enabled
+        if enable_processing:
+            self.signal_processors[board_num] = SignalProcessor( 
+                sample_rate=sample_rate,
+                num_channels=high_chan - low_chan + 1
+            )
+            logger.info(f"  Signal processor created for Board {board_num}")
+        else:
+            logger.info(f"  Signal processing disabled for Board {board_num}")
     
     def start_acquisition(self, duration_seconds: float):
         """
@@ -103,13 +117,31 @@ class AcquisitionController:
             
             while time.time() - start_time < duration_seconds:
                 current_time = time.time() - start_time
+                current_datetime = self.acquisition_start_time + timedelta(seconds=current_time)
                 
                 # Read new data from each DAQ
                 for board_num, daq_config in self.daq_configs.items():
                     new_scans = daq_config['device'].read_new_data()
-                    for scan in new_scans:
-                        daq_config['data'].append(scan)
-                        daq_config['timestamps'].append(current_time)
+                    
+                    if len(new_scans) > 0:
+                        # Create timestamps for this batch
+                        batch_timestamps = [current_datetime] * len(new_scans)
+                        
+                        # Real-time signal processing if processor exists for this board
+                        if board_num in self.signal_processors:
+                            processor = self.signal_processors[board_num]
+                            process_result = processor.process_batch(new_scans, batch_timestamps)
+                            
+                            # Only store data if processor says to keep it
+                            if process_result['keep_data']:
+                                for scan in new_scans:
+                                    daq_config['data'].append(scan)
+                                    daq_config['timestamps'].append(current_datetime)
+                        else:
+                            # No processor - store all raw data (e.g., for temperature device)
+                            for scan in new_scans:
+                                daq_config['data'].append(scan)
+                                daq_config['timestamps'].append(current_datetime)
                 
                 # Log progress every 2 seconds
                 if time.time() - last_log_time >= 2.0:
@@ -248,7 +280,8 @@ def main():
             sample_rate=2,
             low_chan=0,
             high_chan=0,  # Only channel 0
-            duration_seconds=duration
+            duration_seconds=duration,
+            enable_processing=False 
         )
         
         # Board 2: USB-1604HS-2AO (channels 0-3 available)
@@ -259,7 +292,8 @@ def main():
             sample_rate=100000,
             low_chan=0,
             high_chan=2,  # Avoid non-existent channel 4
-            duration_seconds=duration
+            duration_seconds=duration,
+            enable_processing=False
         )
         
         # Start acquisition on all configured DAQs
