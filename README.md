@@ -2,6 +2,10 @@
 
 Multi-device data acquisition system for Measurement Computing DAQ boards with (WIP) real-time signal processing capabilities.
 
+Features to Add:
+-Signal processing similar to DASYLab (Simulink like, but will be slower through Python than C++)
+-Merge in LabJack usage
+
 ## Supported Hardware
 
 - **USB-1608GX-2AO**: 8 analog input channels
@@ -33,6 +37,7 @@ This includes:
 
 ### Hardware Configuration
 
+#### Measurement Computing Devices
 **Important**: Before running the acquisition software, you must configure your DAQ boards using InstaCal.
 
 1. **Launch InstaCal** (installed with MCC drivers)
@@ -41,7 +46,13 @@ This includes:
    - Click "Add Device" or use auto-detection
    - Assign a **board number** to each device (e.g., Board 0, Board 1, Board 2)
    - Test the device to ensure proper communication
-3. **Note the board numbers** - you'll use these in your acquisition script
+3. **Note the board numbers** - these are used in configuring the DAQs in Python
+
+![InstaCAL example](assets/instacal.png)
+
+#### LabJack Devices
+
+WIP
 
 ## Usage
 
