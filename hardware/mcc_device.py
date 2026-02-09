@@ -11,7 +11,7 @@ from mcculw.enums import ScanOptions, FunctionType, Status, ULRange
 from mcculw.device_info import DaqDeviceInfo
 
 from utils.logging_setup import get_logger
-import config
+import config as config
 
 logger = get_logger(__name__)
 

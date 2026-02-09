@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from mcculw import ul
 from mcculw.device_info import DaqDeviceInfo
 from mcculw.ul import ULError
+from mcculw.enums import ULRange
 
 from utils.logging_setup import get_logger
 
@@ -111,8 +112,9 @@ class DeviceManager:
             logger.error(f"Failed to connect to device on board {board_num}: {e}")
             raise
     
-    def setup_daq(self, board_num: int, name: str, sample_rate: int, 
-                  low_chan: int, high_chan: int, duration_seconds: float) -> dict:
+    def setup_daq(self, board_num: int, name: str, sample_rate: int,
+                  low_chan: int, high_chan: int, duration_seconds: float,
+                  ul_range: ULRange = None) -> dict:
         """
         Setup a single DAQ device with its configuration.
         
@@ -148,6 +150,8 @@ class DeviceManager:
         
         logger.info(f"  Config: {sample_rate} Hz, Channels {low_chan}-{high_chan} ({num_channels} channels)")
         logger.info(f"  Expected samples per channel: {points_per_channel}")
+        if ul_range:
+            logger.info(f"  Input range: {ul_range.name}")
         
         # Create configuration dictionary
         config = {
@@ -158,6 +162,7 @@ class DeviceManager:
             'high_chan': high_chan,
             'points_per_channel': points_per_channel,
             'num_channels': num_channels,
+            'ul_range': ul_range,
             'data': [],
             'timestamps': []
         }

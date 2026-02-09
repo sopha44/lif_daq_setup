@@ -11,6 +11,7 @@ import numpy as np
 from utils.setup_mcc_path import setup_mcc_path
 setup_mcc_path()  # Add MCC DLL path before importing mcculw
 
+from mcculw.enums import ULRange
 from device_manager import DeviceManager
 from signal_processor import SignalProcessor
 from utils.logging_setup import get_logger
@@ -37,6 +38,7 @@ class AcquisitionController:
     
     def setup_daq(self, board_num: int, name: str, sample_rate: int, 
                   low_chan: int, high_chan: int, duration_seconds: float,
+                  ul_range: 'ULRange' = None,
                   enable_processing: bool = True):
         """
         Setup a single DAQ device with its configuration.
@@ -49,20 +51,27 @@ class AcquisitionController:
             low_chan: First channel number
             high_chan: Last channel number
             duration_seconds: Acquisition duration for buffer sizing
+            ul_range: ULRange enum value for input range/resolution
+                ULRange.BIP10VOLTS - ±10V
+                ULRange.BIP5VOLTS - ±5V
+                ULRange.BIP2PT5VOLTS - ±2.5V
+                ULRange.BIP1VOLTS - ±1V
+                ULRange.UNI10VOLTS - 0-10V
             enable_processing: Whether to create a signal processor for this DAQ (default: True)
         """
         # Delegate to DeviceManager for configuration
-        config = self.manager.setup_daq(
+        daq_config = self.manager.setup_daq(
             board_num=board_num,
             name=name,
             sample_rate=sample_rate,
             low_chan=low_chan,
             high_chan=high_chan,
-            duration_seconds=duration_seconds
+            duration_seconds=duration_seconds,
+            ul_range=ul_range
         )
         
         # Store configuration for acquisition control
-        self.daq_configs[board_num] = config
+        self.daq_configs[board_num] = daq_config
         
         # Create signal processor for this DAQ if enabled
         if enable_processing:
@@ -73,6 +82,24 @@ class AcquisitionController:
             logger.info(f"  Signal processor created for Board {board_num}")
         else:
             logger.info(f"  Signal processing disabled for Board {board_num}")
+    
+    def get_processor(self, board_num: int) -> SignalProcessor:
+        """
+        Get the signal processor for a specific board.
+        Use this to configure processing blocks after setup_daq().
+        
+        Args:
+            board_num: Board number
+            
+        Returns:
+            SignalProcessor instance for this board
+            
+        Raises:
+            KeyError: If board has no processor (processing disabled or not setup)
+        """
+        if board_num not in self.signal_processors:
+            raise KeyError(f"No signal processor for board {board_num}. Enable processing in setup_daq().")
+        return self.signal_processors[board_num]
     
     def start_acquisition(self, duration_seconds: float):
         """
@@ -91,7 +118,7 @@ class AcquisitionController:
         
         # Create timestamped folder for this acquisition run
         timestamp_str = self.acquisition_start_time.strftime("%Y-%m-%d_%H-%M-%S")
-        data_folder = Path(config.DATA_FOLDER)
+        data_folder = Path(daq_config.DATA_FOLDER)
         self.acquisition_folder = data_folder / timestamp_str
         self.acquisition_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Saving data to: {self.acquisition_folder}")
@@ -104,7 +131,8 @@ class AcquisitionController:
                     low_chan=daq_config['low_chan'],
                     high_chan=daq_config['high_chan'],
                     rate=daq_config['sample_rate'],
-                    points_per_channel=daq_config['points_per_channel']
+                    points_per_channel=daq_config['points_per_channel'],
+                    ai_range=daq_config.get('ul_range')
                 )
                 logger.info(f"  Board {board_num} scan started")
             logger.info("All scans started")
@@ -124,16 +152,20 @@ class AcquisitionController:
                     new_scans = daq_config['device'].read_new_data()
                     
                     if len(new_scans) > 0:
-                        # Create timestamps for this batch
-                        batch_timestamps = [current_datetime] * len(new_scans)
-                        
                         # Real-time signal processing if processor exists for this board
                         if board_num in self.signal_processors:
                             processor = self.signal_processors[board_num]
+                            # One timestamp for the batch - users can calculate exact time from index
+                            batch_timestamps = [current_datetime] * len(new_scans)
+                            
                             process_result = processor.process_batch(new_scans, batch_timestamps)
                             
                             # Only store data if processor says to keep it
                             if process_result['keep_data']:
+                                # Store processed write_data, not raw scans
+                                write_data = process_result['write_data']
+                                # write_data is a dict like {'ch0': array, 'ch1': array, 'Counter00': value}
+                                # For now, just store raw scans - TODO: restructure for processed data
                                 for scan in new_scans:
                                     daq_config['data'].append(scan)
                                     daq_config['timestamps'].append(current_datetime)
@@ -209,16 +241,19 @@ class AcquisitionController:
         Returns:
             pandas DataFrame
         """
-        # Create column names
-        columns = ['Timestamp']
+        # Create column names - Index first, then Timestamp, then channels
+        columns = ['Index', 'Timestamp']
         for ch in range(low_chan, high_chan + 1):
             columns.append(f'CH{ch}')
         
         # Convert data to numpy array
         data_array = np.array(data)
         
-        # Combine timestamp and data
-        combined = np.column_stack([np.array(timestamps), data_array])
+        # Create index column (0, 1, 2, ...)
+        indices = np.arange(len(timestamps))
+        
+        # Combine index, timestamp, and data
+        combined = np.column_stack([indices, np.array(timestamps), data_array])
         
         # Create dataframe
         df = pd.DataFrame(combined, columns=columns)
@@ -251,6 +286,7 @@ class AcquisitionController:
 def main():
     """Main entry point for running acquisition."""
     from utils.logging_setup import setup_logging
+    from signal_processing_config import configure_all_processors
     
     # Setup logging
     setup_logging(log_level=config.LOG_LEVEL, log_to_file=config.LOG_TO_FILE)
@@ -262,6 +298,8 @@ def main():
         # Setup each DAQ with its specific configuration
         duration = 10.0
         
+        #TODO: Refactor to place DAQ config in config file
+
         # Board 0: USB-1608GX-2AO
         # controller.setup_daq(
         #     board_num=0,
@@ -277,11 +315,12 @@ def main():
         controller.setup_daq(
             board_num=1,
             name="USB-TEMP",
-            sample_rate=2,
-            low_chan=0,
-            high_chan=0,  # Only channel 0
-            duration_seconds=duration,
-            enable_processing=False 
+            sample_rate=2, # 2Hz, Sampling rate dependent on DAQ model
+            low_chan=0, # Lowest channel num
+            high_chan=0,  # Highest channel num
+            duration_seconds=duration, # Acquisition time
+            ul_range=None, # No voltage range for temperature device, this variable is ignored in USB-TEMP scan
+            enable_processing=True # Enable processing
         )
         
         # Board 2: USB-1604HS-2AO (channels 0-3 available)
@@ -289,12 +328,16 @@ def main():
         controller.setup_daq(
             board_num=2,
             name="USB-1604HS-2AO",
-            sample_rate=100000,
+            sample_rate=100000, #100kHz
             low_chan=0,
-            high_chan=2,  # Avoid non-existent channel 4
+            high_chan=3,  # All 4 channels
             duration_seconds=duration,
-            enable_processing=False
+            ul_range=None, # Use default range for 1604HS-2AO (±10V)
+            enable_processing=True # Enable processing
         )
+        
+        # Configure signal processing for all boards
+        configure_all_processors(controller)
         
         # Start acquisition on all configured DAQs
         controller.start_acquisition(duration_seconds=duration)

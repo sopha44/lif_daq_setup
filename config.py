@@ -5,6 +5,8 @@ Modify these values to customize system behavior.
 import logging
 from mcculw.enums import ScanOptions, ULRange
 
+# TODO: Clean up config. Some variables used by hardware classes. Some can be used in DAQ setup, but isn't.
+
 # ============================================================================
 # Logging Configuration
 # ============================================================================
