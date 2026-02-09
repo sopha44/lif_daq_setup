@@ -16,7 +16,7 @@ setup_mcc_path()
 
 from device_manager import DeviceManager
 from utils.logging_setup import setup_logging, get_logger
-import config
+import config as config
 
 from mcculw import ul
 from mcculw.enums import FunctionType
