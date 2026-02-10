@@ -131,25 +131,25 @@ class MCCTemperatureDevice:
         
         logger.debug(f"Background scan thread started, interval: {scan_interval:.3f}s")
         
-        while not self.stop_thread_event.is_set() and self.current_count < self.total_count:
+        # Keep reading continuously
+        while not self.stop_thread_event.is_set():
             scan_start_time = time.time()
             
             # Read one scan (all channels)
             for chan_offset in range(self.num_chans):
-                if self.stop_thread_event.is_set() or self.current_count >= self.total_count:
+                if self.stop_thread_event.is_set():
                     break
                 
                 chan = self.low_chan + chan_offset
                 try:
                     temp_value = ul.t_in(self.board_num, chan, self.temp_scale)
                     
-                    # Store in buffer
+                    # Store in buffer (wrap around when full)
                     with self.data_lock:
-                        buffer_index = self.current_count
-                        if buffer_index < self.total_count:
-                            self.ctypes_array[buffer_index] = temp_value
-                            self.current_count += 1
-                            self.current_index = buffer_index
+                        buffer_index = self.current_count % self.total_count
+                        self.ctypes_array[buffer_index] = temp_value
+                        self.current_count += 1
+                        self.current_index = buffer_index
                             
                 except Exception as e:
                     logger.error(f"Error reading temperature from channel {chan}: {e}")

@@ -40,6 +40,7 @@ class AcquisitionController:
     def setup_daq(self, board_num: int, name: str, sample_rate: int, 
                   low_chan: int, high_chan: int,
                   continuous_mode: bool = False,
+                  sample_every_nth: int = 1,
                   trigger_channel: int = None, 
                   trigger_voltage_high: float = None, 
                   trigger_voltage_low: float = None,
@@ -55,6 +56,7 @@ class AcquisitionController:
             low_chan: First channel number
             high_chan: Last channel number
             continuous_mode: If True, save all data continuously (no triggers)
+            sample_every_nth: In continuous mode, only save every Nth sample (default: 1 = save all)
             trigger_channel: Which channel to monitor for trigger (only if continuous_mode=False)
             trigger_voltage_high: Rising edge threshold voltage
             trigger_voltage_low: Falling edge threshold voltage
@@ -75,6 +77,7 @@ class AcquisitionController:
         
         # Configuration based on mode
         config['continuous_mode'] = continuous_mode
+        config['sample_every_nth'] = sample_every_nth
         config['trigger_channel'] = trigger_channel
         config['trigger_voltage_high'] = trigger_voltage_high
         config['trigger_voltage_low'] = trigger_voltage_low
@@ -86,7 +89,10 @@ class AcquisitionController:
             config['buffer'] = []
             config['buffer_timestamps'] = []
             config['max_buffer_samples'] = None
-            logger.info(f"  Continuous mode - saving all data")
+            if sample_every_nth > 1:
+                logger.info(f"  Continuous mode - saving every {sample_every_nth} samples ({sample_rate/sample_every_nth:.2f} Hz)")
+            else:
+                logger.info(f"  Continuous mode - saving all data")
         else:
             max_samples = int(sample_rate * acquisition_window_us / 1e6) if acquisition_window_us else 100
             config['buffer'] = []
@@ -120,13 +126,31 @@ class AcquisitionController:
             daq_config['csv_file'] = open(filename, 'w', newline='', buffering=1)  # Line buffered
             
             # Write header
-            headers = ['Trigger', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
+            headers = ['Trigger_or_N', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
             daq_config['csv_file'].write(','.join(headers) + '\n')
         
         # Append data rows
         for ts, scan in zip(daq_config['buffer_timestamps'], daq_config['buffer']):
             row = [str(trigger_num), ts.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
             daq_config['csv_file'].write(','.join(row) + '\n')
+    
+    def _save_continuous_sample(self, board_num, daq_config, sample_num, scan, timestamp):
+        """Save a single continuous sample directly to CSV (no buffering)."""
+        # Get or create CSV file handle
+        if 'csv_file' not in daq_config:
+            # First time - create file with headers
+            num_channels = daq_config['high_chan'] - daq_config['low_chan'] + 1
+            model_name = daq_config['name'].replace('-', '_')
+            filename = self.acquisition_folder / f"board{board_num}_{model_name}.csv"
+            daq_config['csv_file'] = open(filename, 'w', newline='', buffering=1)  # Line buffered
+            
+            # Write header
+            headers = ['Trigger_or_N', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
+            daq_config['csv_file'].write(','.join(headers) + '\n')
+        
+        # Write single row directly
+        row = [str(sample_num), timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
+        daq_config['csv_file'].write(','.join(row) + '\n')
     
     def start_acquisition(self, trigger_check_decimation: int = 20):
         """
@@ -166,18 +190,10 @@ class AcquisitionController:
             # Step 1: Start scans on all configured devices
             logger.info("Starting background scans...")
             for board_num, daq_config in self.daq_configs.items():
-                # Use BIP10VOLTS (±10V) range for high-speed analog boards only
-                # Temperature devices don't use ai_range parameter
-                if daq_config['sample_rate'] > 10:
-                    daq_config['device'].start_scan(
-                        low_chan=daq_config['low_chan'],
-                        high_chan=daq_config['high_chan'],
-                        rate=daq_config['sample_rate'],
-                        points_per_channel=daq_config['points_per_channel'],
-                        ai_range=ULRange.BIP10VOLTS
-                    )
-                    logger.info(f"  Board {board_num} scan started (Range: BIP10VOLTS)")
-                else:
+                # Check device type by name (temperature devices vs analog input devices)
+                is_temp_device = 'TEMP' in daq_config['name'].upper()
+                
+                if is_temp_device:
                     # Temperature device - no ai_range parameter
                     daq_config['device'].start_scan(
                         low_chan=daq_config['low_chan'],
@@ -186,6 +202,16 @@ class AcquisitionController:
                         points_per_channel=daq_config['points_per_channel']
                     )
                     logger.info(f"  Board {board_num} scan started (Temperature device)")
+                else:
+                    # Analog input device - use BIP10VOLTS range
+                    daq_config['device'].start_scan(
+                        low_chan=daq_config['low_chan'],
+                        high_chan=daq_config['high_chan'],
+                        rate=daq_config['sample_rate'],
+                        points_per_channel=daq_config['points_per_channel'],
+                        ai_range=ULRange.BIP10VOLTS
+                    )
+                    logger.info(f"  Board {board_num} scan started (Range: BIP10VOLTS)")
             logger.info("All scans started")
             
             # Step 2: Collect data - continuous loop with trigger monitoring
@@ -213,18 +239,21 @@ class AcquisitionController:
                     
                     new_scans = daq_config['device'].read_new_data()
                     
-                    # For continuous mode, save all data directly
+                    # For continuous mode, save data with optional decimation (no buffering)
                     if len(new_scans) > 0 and daq_config.get('continuous_mode', False):
                         if not hasattr(self, 'continuous_count'):
                             self.continuous_count = {}
                         if board_num not in self.continuous_count:
                             self.continuous_count[board_num] = 0
                         
+                        sample_every_nth = daq_config.get('sample_every_nth', 1)
                         for scan in new_scans:
                             self.continuous_count[board_num] += 1
-                            daq_config['buffer'] = [scan]
-                            daq_config['buffer_timestamps'] = [current_datetime]
-                            self._append_to_csv(board_num, daq_config, self.continuous_count[board_num])
+                            # Only save every Nth sample - directly to CSV, no buffering
+                            if self.continuous_count[board_num] % sample_every_nth == 0:
+                                self._save_continuous_sample(board_num, daq_config, 
+                                                            self.continuous_count[board_num], 
+                                                            scan, current_datetime)
                     
                     # For trigger mode
                     if len(new_scans) > 0 and not daq_config.get('continuous_mode', False) and daq_config['trigger_channel'] is not None:
@@ -288,14 +317,21 @@ class AcquisitionController:
                 if time.time() - last_status_time >= 2.0:
                     status_lines = []
                     for board_num, daq_config in self.daq_configs.items():
-                        state = daq_config['state']
-                        if state == 'WAITING':
-                            ch = daq_config['trigger_channel']
-                            v = daq_config['last_voltage']
-                            status_lines.append(f"Board{board_num}: [WAIT] CH{ch}={v:.3f}V" if ch else f"Board{board_num}: [WAIT]")
-                        elif state == 'ACQUIRING':
-                            buf_len = len(daq_config['buffer'])
-                            status_lines.append(f"Board{board_num}: [ACQ] {buf_len} samples")
+                        if daq_config.get('continuous_mode', False):
+                            # Continuous mode - show sample count
+                            count = self.continuous_count.get(board_num, 0) if hasattr(self, 'continuous_count') else 0
+                            saved = count // daq_config.get('sample_every_nth', 1)
+                            status_lines.append(f"Board{board_num}: [CONTINUOUS] {count} samples ({saved} saved)")
+                        else:
+                            # Trigger mode - show state
+                            state = daq_config['state']
+                            if state == 'WAITING':
+                                ch = daq_config['trigger_channel']
+                                v = daq_config['last_voltage']
+                                status_lines.append(f"Board{board_num}: [WAIT] CH{ch}={v:.3f}V" if ch else f"Board{board_num}: [WAIT]")
+                            elif state == 'ACQUIRING':
+                                buf_len = len(daq_config['buffer'])
+                                status_lines.append(f"Board{board_num}: [ACQ] {buf_len} samples")
                     
                     logger.info(f"Status [{current_time:.1f}s]: " + " | ".join(status_lines))
                     
@@ -410,10 +446,11 @@ def main():
         controller.setup_daq(
             board_num=0,
             name="USB-TEMP",
-            sample_rate=2,
+            sample_rate=1,  # 1 Hz
             low_chan=0,
             high_chan=0,
             continuous_mode=True,  # Continuous measurement, no triggers
+            sample_every_nth=30,  # Save every 30th sample = once every 30 seconds
             enable_processing=False 
         )
         
@@ -421,20 +458,22 @@ def main():
         controller.setup_daq(
             board_num=1,
             name="USB-1604HS-2AO",
-            sample_rate=50000,  # 50 kHz - better temporal resolution for 1kHz triggers
+            sample_rate=100,  # 100 Hz (high-speed DAQ may have minimum rate ~100Hz)
             low_chan=0,
-            high_chan=0,  # Single channel - avoids differential mode channel mapping issues
-            continuous_mode=False,  # Trigger-based acquisition
-            trigger_channel=0,  # Monitor CH0 for trigger
-            trigger_voltage_high=0.0,  # Rising edge at 0V (signal is ±1.5V bipolar)
-            trigger_voltage_low=0.0,   # Falling edge at 0V
-            acquisition_window_us=2000.0,  # 2ms = 100 samples at 50kHz (2 full 1kHz cycles)
+            high_chan=0,  # Single channel - avoids differential mode channel mapping issues #TODO: Fix why having more channels screws up data/indexing
+            # continuous_mode=False,  # Trigger-based acquisition
+            # trigger_channel=0,  # Monitor CH0 for trigger
+            # trigger_voltage_high=1.0,  # Rising edge at 1V
+            # trigger_voltage_low=1.0,   # Falling edge at 1V
+            # acquisition_window_us=1000000.0,  # 1 second = 100 samples at 100Hz
+            continuous_mode=True,  # Continuous measurement, no triggers
+            sample_every_nth=3000,  # Save every 3000th sample = once every 30 seconds at 100Hz
             enable_processing=False
         )
         
         # Start acquisition - runs continuously until Ctrl+C
         # trigger_check_decimation: check every Nth sample while WAITING
-        # At 50kHz: decimation=10 means check 5000 times/sec (plenty for 1kHz triggers)
+        # At 100Hz: decimation=5 means check 20 times/sec
         controller.start_acquisition(trigger_check_decimation=5)
         
     except KeyboardInterrupt:
