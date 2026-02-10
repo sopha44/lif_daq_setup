@@ -5,6 +5,7 @@ Provides operations for MCC USB-series DAQ devices.
 from ctypes import cast, POINTER, c_double, c_ushort, c_ulong
 from typing import Optional, List, Tuple
 import numpy as np
+import time
 
 from mcculw import ul
 from mcculw.enums import ScanOptions, FunctionType, Status, ULRange
@@ -96,10 +97,9 @@ class MCCDevice:
         if scan_options is not None:
             self.scan_options = scan_options
         else:
-            self.scan_options = ScanOptions.BACKGROUND
-            # Add SCALEDATA if supported
-            if ScanOptions.SCALEDATA in self.ai_info.supported_scan_options:
-                self.scan_options |= ScanOptions.SCALEDATA
+            # USB-1604HS doesn't support SCALEDATA with background scanning
+            # Use BACKGROUND | CONTINUOUS only, convert manually
+            self.scan_options = ScanOptions.BACKGROUND | ScanOptions.CONTINUOUS
         
         logger.info(f"Scan configured: CH{self.low_chan}-{self.high_chan}, "
                    f"{self.rate} Hz, {self.points_per_channel} pts/ch, "
@@ -168,6 +168,12 @@ class MCCDevice:
             self.last_read_index = -1
             
             logger.info(f"Background scan started on board {self.board_num}")
+            logger.info(f"  Scan options: {self.scan_options} (CONTINUOUS={ScanOptions.CONTINUOUS in self.scan_options})")
+            logger.info(f"  Buffer size: {self.total_count} samples, Rate: {self.rate} Hz")
+            
+            # Give hardware time to start filling buffer before first read
+            import time
+            time.sleep(0.01)  # 10ms delay to let buffer fill
             
         except Exception as e:
             # Clean up buffer if scan failed
@@ -233,41 +239,29 @@ class MCCDevice:
     
     def read_new_data(self) -> List[List[float]]:
         """
-        Read new data since last read (incremental reading for long acquisitions).
-        Returns data organized by scans (each scan contains values from all channels).
-        Automatically tracks last read position to avoid duplicates.
-        Handles circular buffer wraparound correctly.
-        
-        Returns:
-            List of scans, where each scan is a list of channel values
+        Read new data since last read. Returns list of scans.
+        Each scan is a list of channel values.
         """
         if not self.is_scanning or not self.ctypes_array:
             return []
         
         status, curr_count, curr_index = self.get_status()
         
-        if curr_count == 0:
-            return []  # No data yet
-        
-        # Check if index hasn't changed
-        if curr_index == self.last_read_index:
+        if curr_count == 0 or curr_index == self.last_read_index:
             return []  # No new data
         
-        scans = []
+        # First read - wait for some data
+        if self.last_read_index == -1 and curr_index < 100:
+            return []
         
-        # Handle circular buffer wraparound
-        # We need to read from last_read_index+1 to curr_index (inclusive)
-        # But account for wraparound at total_count
-        
-        # Calculate number of new samples (accounting for circular buffer)
-        if curr_index >= self.last_read_index:
-            # No wraparound  
+        # Calculate new samples
+        if curr_index > self.last_read_index:
             new_samples = curr_index - self.last_read_index
         else:
-            # Wraparound occurred
-            new_samples = (self.total_count - self.last_read_index - 1) + curr_index + 1
+            # Wraparound
+            new_samples = (self.total_count - self.last_read_index) + curr_index
         
-        # Read new scans
+        scans = []
         num_new_scans = new_samples // self.num_chans
         
         for scan_num in range(num_new_scans):
