@@ -326,12 +326,11 @@ class AcquisitionController:
                             logger.info(f"[CYCLE {measurement_cycle}] Trigger detected! Board {master_board}: {ch_values}")
                             
                             # Calculate how many samples to collect
-                            # acquisition_window_us is per-channel, so multiply by num_channels for total time
-                            acquisition_window_per_channel_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
-                            total_acquisition_time_s = acquisition_window_per_channel_s * master_config['num_channels']
-                            samples_to_collect = int(master_config['sample_rate'] * total_acquisition_time_s)
-                            scans_to_collect = samples_to_collect // master_config['num_channels']
-                            logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {total_acquisition_time_s*1000:.1f}ms ({acquisition_window_per_channel_s*1e6:.0f}µs per channel)...")
+                            # acquisition_window_us is the simultaneous window for all channels
+                            acquisition_window_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
+                            samples_to_collect = int(master_config['sample_rate'] * acquisition_window_s)
+                            scans_to_collect = samples_to_collect
+                            logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {acquisition_window_s*1000:.1f}ms...")
                             
                             # Use only the needed scans from this batch starting at trigger point
                             acquisition_buffer = new_scans[idx:idx + scans_to_collect]
@@ -547,13 +546,13 @@ def main():
         controller.setup_daq(
             board_num=1,
             name="USB-1604HS-2AO",
-            sample_rate=1_000_000,  # 1 MHz aggregate (250 kHz per channel with 4 channels)
+            sample_rate=1_000_000,  # 1 MHz
             low_chan=0,
-            high_chan=1,  # Read CH0, CH1 (2 channels)
+            high_chan=3,  # Read CH0, CH1, CH2, CH3 (4 channels)
             trigger_channel=0,  # Monitor CH0 for trigger
             trigger_voltage_high=1.0,  # Rising edge at 1V
             # trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
-            acquisition_window_us=300,  # 300 µs per channel = 300 samples per channel
+            acquisition_window_us=300,  # 300 µs per channel
             enable_processing=False
         )
         
