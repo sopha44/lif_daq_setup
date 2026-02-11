@@ -247,28 +247,56 @@ class MCCDevice:
         
         status, curr_count, curr_index = self.get_status()
         
-        if curr_count == 0 or curr_index == self.last_read_index:
-            return []  # No new data
+        if curr_count == 0:
+            return []  # No data yet
         
-        # First read - wait for some data
-        if self.last_read_index == -1 and curr_index < 100:
+        # Align curr_index to last complete scan boundary
+        # curr_index points to the last sample, which might be mid-scan
+        # We need to find the index of the last channel of the last complete scan
+        complete_scans = curr_count // self.num_chans
+        if complete_scans == 0:
+            return []  # No complete scans yet
+        
+        # Calculate the index of the last sample in the last complete scan
+        last_complete_index = (complete_scans * self.num_chans) - 1
+        
+        # Check if we've already read this data
+        if self.last_read_index == last_complete_index:
+            return []  # No new complete scans
+        
+        # First read - initialize
+        if self.last_read_index == -1:
+            self.last_read_index = -1  # Will start from index 0
+        
+        # Calculate new complete scans available
+        if self.last_read_index == -1:
+            # First read - read all complete scans
+            start_index = 0
+            num_new_scans = complete_scans
+        else:
+            # Calculate how many new complete scans since last read
+            start_index = self.last_read_index + 1
+            new_samples = last_complete_index - self.last_read_index
+            num_new_scans = new_samples // self.num_chans
+        
+        # IMPORTANT: Limit to max 10000 scans to prevent hanging on large buffers
+        # In continuous mode, we only care about recent data for trigger detection
+        MAX_SCANS_PER_READ = 10000
+        if num_new_scans > MAX_SCANS_PER_READ:
+            # Skip to most recent scans
+            start_index = last_complete_index - (MAX_SCANS_PER_READ * self.num_chans) + 1
+            num_new_scans = MAX_SCANS_PER_READ
+        
+        if num_new_scans <= 0:
             return []
         
-        # Calculate new samples
-        if curr_index > self.last_read_index:
-            new_samples = curr_index - self.last_read_index
-        else:
-            # Wraparound
-            new_samples = (self.total_count - self.last_read_index) + curr_index
-        
         scans = []
-        num_new_scans = new_samples // self.num_chans
         
         for scan_num in range(num_new_scans):
             scan_data = []
             for ch_offset in range(self.num_chans):
                 # Calculate index with wraparound
-                idx = (self.last_read_index + 1 + scan_num * self.num_chans + ch_offset) % self.total_count
+                idx = (start_index + scan_num * self.num_chans + ch_offset) % self.total_count
                 
                 if self.scan_options & ScanOptions.SCALEDATA:
                     # Data already in engineering units
@@ -285,8 +313,8 @@ class MCCDevice:
             if len(scan_data) == self.num_chans:
                 scans.append(scan_data)
         
-        # Update last read index
-        self.last_read_index = curr_index
+        # Update last read index to the last sample of the last complete scan we read
+        self.last_read_index = last_complete_index
         
         return scans
     

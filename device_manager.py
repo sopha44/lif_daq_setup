@@ -89,7 +89,14 @@ class DeviceManager:
             daq_dev_info = DaqDeviceInfo(board_num)
             
             # Determine device type and create appropriate object
-            if daq_dev_info.supports_analog_input:
+            # Check for temperature devices first (some devices report both AI and temp capabilities)
+            is_temp_device = ('TEMP' in daq_dev_info.product_name.upper() or 
+                            'TC' in daq_dev_info.product_name.upper())
+            
+            if is_temp_device and daq_dev_info.supports_temp_input:
+                device = MCCTemperatureDevice(board_num, daq_dev_info)
+                logger.info(f"Connected to temperature device: {daq_dev_info.product_name}")
+            elif daq_dev_info.supports_analog_input:
                 device = MCCDevice(board_num, daq_dev_info)
                 logger.info(f"Connected to analog input device: {daq_dev_info.product_name}")
             elif daq_dev_info.supports_temp_input:
