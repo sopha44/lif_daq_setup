@@ -60,7 +60,7 @@ class AcquisitionController:
             trigger_channel: Which channel to monitor for trigger (only if continuous_mode=False)
             trigger_voltage_high: Rising edge threshold voltage
             trigger_voltage_low: Falling edge threshold voltage
-            acquisition_window_us: Buffer size in microseconds (only for trigger mode)
+            acquisition_window_us: Time window per channel in microseconds (total acquisition time = this × num_channels)
             enable_processing: Signal processing (default: False)
         """
         # 10 second circular buffer for continuous operation
@@ -326,10 +326,12 @@ class AcquisitionController:
                             logger.info(f"[CYCLE {measurement_cycle}] Trigger detected! Board {master_board}: {ch_values}")
                             
                             # Calculate how many samples to collect
-                            acquisition_window_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
-                            samples_to_collect = int(master_config['sample_rate'] * acquisition_window_s)
+                            # acquisition_window_us is per-channel, so multiply by num_channels for total time
+                            acquisition_window_per_channel_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
+                            total_acquisition_time_s = acquisition_window_per_channel_s * master_config['num_channels']
+                            samples_to_collect = int(master_config['sample_rate'] * total_acquisition_time_s)
                             scans_to_collect = samples_to_collect // master_config['num_channels']
-                            logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {acquisition_window_s*1000:.1f}ms...")
+                            logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {total_acquisition_time_s*1000:.1f}ms ({acquisition_window_per_channel_s*1e6:.0f}µs per channel)...")
                             
                             # Use only the needed scans from this batch starting at trigger point
                             acquisition_buffer = new_scans[idx:idx + scans_to_collect]
@@ -540,18 +542,18 @@ def main():
             enable_processing=False 
         )
         
-        # Board 1: USB-1604HS-2AO (channels 0-2)
+        # Board 1: USB-1604HS-2AO
         # Master trigger device - monitors CH0 for trigger signal
         controller.setup_daq(
             board_num=1,
             name="USB-1604HS-2AO",
-            sample_rate=400000,  # 400 kHz (10µs resolution when using 4 channels)
+            sample_rate=1_000_000,  # 1 MHz aggregate (250 kHz per channel with 4 channels)
             low_chan=0,
-            high_chan=3,  # Read CH0, CH1, CH2
+            high_chan=1,  # Read CH0, CH1 (2 channels)
             trigger_channel=0,  # Monitor CH0 for trigger
             trigger_voltage_high=1.0,  # Rising edge at 1V
-            trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
-            acquisition_window_us=600.0,  # 600 µs = 0.6 ms = 240 samples at 400 kHz
+            # trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
+            acquisition_window_us=300,  # 300 µs per channel = 300 samples per channel
             enable_processing=False
         )
         
@@ -561,7 +563,7 @@ def main():
         controller.start_acquisition(
             trigger_check_decimation=10,  # Check every 10th sample = 10,000 checks/sec
             time_between_points=30.0,
-            total_duration_minutes=30  # Run for 30 minutes
+            total_duration_minutes=120  # Run for 120 minutes
         )
         
     except KeyboardInterrupt:
