@@ -153,7 +153,7 @@ class AcquisitionController:
         row = [str(sample_num), timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
         daq_config['csv_file'].write(','.join(row) + '\n')
     
-    def start_acquisition(self, trigger_check_decimation: int = 20, time_between_points: float = 30.0):
+    def start_acquisition(self, trigger_check_decimation: int = 20, time_between_points: float = 30.0, total_duration_minutes: float = None):
         """
         Start time-gated trigger-based acquisition on all configured DAQs.
         Waits time_between_points seconds, then monitors Board 1 CH0 for trigger.
@@ -163,12 +163,15 @@ class AcquisitionController:
             trigger_check_decimation: Check every Nth sample for trigger while WAITING (default: 20)
                                      Lower = more responsive but slower. Higher = faster but may miss short triggers.
             time_between_points: Time in seconds to wait between measurement cycles (default: 30.0)
+            total_duration_minutes: Total duration in minutes to run acquisition (default: None = run indefinitely)
         """
         self.trigger_check_decimation = trigger_check_decimation
         self.time_between_points = time_between_points
         logger.info("=" * 70)
         logger.info("Starting Time-Gated Trigger-Based Data Acquisition")
         logger.info(f"Time between measurements: {time_between_points}s")
+        if total_duration_minutes is not None:
+            logger.info(f"Total duration: {total_duration_minutes} minutes")
         logger.info(f"Active DAQs: {len(self.daq_configs)}")
         
         # Log trigger configuration
@@ -249,10 +252,21 @@ class AcquisitionController:
             
             logger.info(f"[CYCLE {measurement_cycle}] Trigger armed immediately - waiting for first trigger...")
             
-            # Run until Ctrl+C
+            # Calculate end time if total_duration_minutes is specified
+            end_time = None
+            if total_duration_minutes is not None:
+                end_time = start_time + (total_duration_minutes * 60)
+                logger.info(f"Acquisition will end at {(self.acquisition_start_time + timedelta(minutes=total_duration_minutes)).strftime('%H:%M:%S')}")
+            
+            # Run until Ctrl+C or total_duration_minutes elapsed
             while True:
                 current_time = time.time() - start_time
                 current_datetime = self.acquisition_start_time + timedelta(seconds=current_time)
+                
+                # Check if total duration has elapsed
+                if end_time is not None and time.time() >= end_time:
+                    logger.info(f"Total duration of {total_duration_minutes} minutes elapsed - ending acquisition")
+                    break
                 
                 # Check if we should arm the trigger (after time_between_points has elapsed)
                 # Skip this check for the first cycle (last_measurement_time is None)
@@ -515,7 +529,7 @@ def main():
         #     duration_seconds=duration
         # )
         
-        # Board 0: USB-TEMP (only channel 0 has thermocouple)
+        # Board 0: USB-TEMP-AI
         # Slave device - no trigger, will be measured when Board 1 triggers
         controller.setup_daq(
             board_num=0,
@@ -537,7 +551,7 @@ def main():
             trigger_channel=0,  # Monitor CH0 for trigger
             trigger_voltage_high=1.0,  # Rising edge at 1V
             trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
-            acquisition_window_us=300.0,  # 300 µs = 0.3 ms = 120 samples at 400 kHz
+            acquisition_window_us=600.0,  # 600 µs = 0.6 ms = 240 samples at 400 kHz
             enable_processing=False
         )
         
@@ -546,7 +560,8 @@ def main():
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
             trigger_check_decimation=10,  # Check every 10th sample = 10,000 checks/sec
-            time_between_points=30.0
+            time_between_points=30.0,
+            total_duration_minutes=30  # Run for 30 minutes
         )
         
     except KeyboardInterrupt:
