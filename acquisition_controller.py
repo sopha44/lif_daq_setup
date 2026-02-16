@@ -22,6 +22,28 @@ logger = get_logger(__name__)
 
 
 class AcquisitionController:
+    def _save_continuous_sample(self, board_num, daq_config, sample_num, scan, timestamp):
+        """
+        Save a single scan/sample to the board's CSV file. Creates the file and header if needed.
+        Args:
+            board_num: Board number
+            daq_config: DAQ config dict for this board
+            sample_num: Sample or cycle number (for Trigger_or_N column)
+            scan: List of channel values
+            timestamp: datetime object for this sample
+        """
+        # Get or create CSV file handle
+        if 'csv_file' not in daq_config:
+            num_channels = daq_config['high_chan'] - daq_config['low_chan'] + 1
+            model_name = daq_config['name'].replace('-', '_')
+            filename = self.acquisition_folder / f"board{board_num}_{model_name}.csv"
+            daq_config['csv_file'] = open(filename, 'w', newline='', buffering=1)  # Line buffered
+            # Write header
+            headers = ['Trigger_or_N', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
+            daq_config['csv_file'].write(','.join(headers) + '\n')
+        # Write single row directly
+        row = [str(sample_num), timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
+        daq_config['csv_file'].write(','.join(row) + '\n')
     """
     Orchestrates multi-device data acquisition workflows.
     Coordinates timing, data collection, and file saving.
@@ -84,74 +106,9 @@ class AcquisitionController:
         config['acquisition_window_us'] = acquisition_window_us
         config['state'] = 'WAITING'  # WAITING or ACQUIRING
         config['last_voltage'] = 0.0
-        
-        # Acquisition buffer
-        if continuous_mode:
-            config['buffer'] = []
-            config['buffer_timestamps'] = []
-            config['max_buffer_samples'] = None
-            if sample_every_nth > 1:
-                logger.info(f"  Continuous mode - saving every {sample_every_nth} samples ({sample_rate/sample_every_nth:.2f} Hz)")
-            else:
-                logger.info(f"  Continuous mode - saving all data")
-        else:
-            max_samples = int(sample_rate * acquisition_window_us / 1e6) if acquisition_window_us else 100
-            config['buffer'] = []
-            config['buffer_timestamps'] = []
-            config['max_buffer_samples'] = max_samples
-            logger.info(f"  Trigger: CH{trigger_channel} rising@{trigger_voltage_high}V, falling@{trigger_voltage_low}V")
-            logger.info(f"  Acquisition window: {acquisition_window_us}us ({max_samples} samples)")
-        
+
+        # Add config to daq_configs for use in acquisition
         self.daq_configs[board_num] = config
-        
-        if enable_processing:
-            self.signal_processors[board_num] = SignalProcessor(
-                sample_rate=sample_rate,
-                num_channels=high_chan - low_chan + 1
-            )
-            logger.info(f"  Signal processing enabled")
-        else:
-            logger.info(f"  Signal processing disabled")
-    
-    def _append_to_csv(self, board_num, daq_config, trigger_num):
-        """Append trigger acquisition data to continuous CSV file."""
-        if len(daq_config['buffer']) == 0:
-            return
-        
-        # Get or create CSV file handle
-        if 'csv_file' not in daq_config:
-            # First time - create file with headers
-            num_channels = daq_config['high_chan'] - daq_config['low_chan'] + 1
-            model_name = daq_config['name'].replace('-', '_')
-            filename = self.acquisition_folder / f"board{board_num}_{model_name}.csv"
-            daq_config['csv_file'] = open(filename, 'w', newline='', buffering=1)  # Line buffered
-            
-            # Write header
-            headers = ['Trigger_or_N', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
-            daq_config['csv_file'].write(','.join(headers) + '\n')
-        
-        # Append data rows
-        for ts, scan in zip(daq_config['buffer_timestamps'], daq_config['buffer']):
-            row = [str(trigger_num), ts.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
-            daq_config['csv_file'].write(','.join(row) + '\n')
-    
-    def _save_continuous_sample(self, board_num, daq_config, sample_num, scan, timestamp):
-        """Save a single continuous sample directly to CSV (no buffering)."""
-        # Get or create CSV file handle
-        if 'csv_file' not in daq_config:
-            # First time - create file with headers
-            num_channels = daq_config['high_chan'] - daq_config['low_chan'] + 1
-            model_name = daq_config['name'].replace('-', '_')
-            filename = self.acquisition_folder / f"board{board_num}_{model_name}.csv"
-            daq_config['csv_file'] = open(filename, 'w', newline='', buffering=1)  # Line buffered
-            
-            # Write header
-            headers = ['Trigger_or_N', 'Timestamp'] + [f'CH{daq_config["low_chan"] + i}' for i in range(num_channels)]
-            daq_config['csv_file'].write(','.join(headers) + '\n')
-        
-        # Write single row directly
-        row = [str(sample_num), timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]] + [str(v) for v in scan]
-        daq_config['csv_file'].write(','.join(row) + '\n')
     
     def start_acquisition(self, trigger_check_decimation: int = 20, time_between_points: float = 30.0, total_duration_minutes: float = None):
         """
@@ -293,14 +250,16 @@ class AcquisitionController:
                     if last_measurement_time is not None and time.time() - last_status_time >= 5.0:
                         time_since_last = time.time() - last_measurement_time
                         time_remaining = time_between_points - time_since_last
-                        logger.info(f"Status [{current_time:.1f}s]: [TIMING GATE] Next cycle in {time_remaining:.1f}s (Cycle #{measurement_cycle})")
+                        logger.info(f"Status: [TIMING GATE] Next cycle in {time_remaining:.1f}s (Cycle #{measurement_cycle})")
                         last_status_time = time.time()
                     continue
                 
                 # ARMED - read data from ALL boards first (don't drain yet)
                 all_board_data = {}
                 for board_num, daq_config in self.daq_configs.items():
-                    all_board_data[board_num] = daq_config['device'].read_new_data()
+                    scans = daq_config['device'].read_new_data()
+                    logger.debug(f"[DEBUG] Board {board_num}: {len(scans)} scans read, device={daq_config['device']}.")
+                    all_board_data[board_num] = scans
                 
                 # Check master board for trigger
                 new_scans = all_board_data[master_board]
@@ -357,21 +316,16 @@ class AcquisitionController:
                                                             measurement_cycle, 
                                                             acq_scan, 
                                                             current_datetime)
-                            
+
                             # Save single measurement from other boards
                             for b_num, b_config in self.daq_configs.items():
                                 if b_num == master_board:
                                     continue  # Already saved
-                                    
                                 board_scans = all_board_data[b_num]
-                                
-                                # If no new data, try to use data saved during timing gate
                                 if len(board_scans) == 0 and 'last_scan_during_gate' in b_config:
                                     board_scans = [b_config['last_scan_during_gate']]
                                     logger.info(f"  Board {b_num}: Using saved data from timing gate")
-                                
                                 if len(board_scans) > 0:
-                                    # Save single most recent scan
                                     measurement = board_scans[-1]
                                     self._save_continuous_sample(b_num, b_config, 
                                                                 measurement_cycle, 
@@ -379,11 +333,9 @@ class AcquisitionController:
                                                                 current_datetime)
                                     logger.info(f"  Board {b_num}: {measurement}")
                                 else:
-                                    # Try to read current values directly from device
                                     try:
                                         device = b_config['device']
                                         if hasattr(device, 'read_single_value'):
-                                            # Temperature device - read directly
                                             direct_values = []
                                             for ch in range(b_config['low_chan'], b_config['high_chan'] + 1):
                                                 val = device.read_single_value(ch)
@@ -397,19 +349,47 @@ class AcquisitionController:
                                             logger.warning(f"  Board {b_num}: No data available!")
                                     except Exception as e:
                                         logger.warning(f"  Board {b_num}: No data available! ({e})")
-                            
+
+                            # Stop and restart scan for all boards (buffer reset)
+                            for board_num, daq_config in self.daq_configs.items():
+                                try:
+                                    daq_config['device'].stop_scan()
+                                    logger.info(f"  Board {board_num}: Scan stopped for buffer reset.")
+                                    is_temp_device = 'TEMP' in daq_config['name'].upper()
+                                    if is_temp_device:
+                                        daq_config['device'].start_scan(
+                                            low_chan=daq_config['low_chan'],
+                                            high_chan=daq_config['high_chan'],
+                                            rate=daq_config['sample_rate'],
+                                            points_per_channel=daq_config['points_per_channel']
+                                        )
+                                        logger.info(f"  Board {board_num}: Scan restarted (Temperature device)")
+                                    else:
+                                        daq_config['device'].start_scan(
+                                            low_chan=daq_config['low_chan'],
+                                            high_chan=daq_config['high_chan'],
+                                            rate=daq_config['sample_rate'],
+                                            points_per_channel=daq_config['points_per_channel'],
+                                            ai_range=ULRange.BIP10VOLTS
+                                        )
+                                        logger.info(f"  Board {board_num}: Scan restarted (Analog input device)")
+                                except Exception as e:
+                                    logger.error(f"  Board {board_num}: Error stopping/restarting scan: {e}")
+
                             # Reset for next cycle
                             trigger_armed = False
                             last_measurement_time = time.time()
                             master_config['last_voltage'] = voltage
                             logger.info(f"[CYCLE {measurement_cycle}] Complete - waiting {time_between_points}s for next cycle")
+                            logger.debug(f"[DEBUG] Trigger disarmed at {current_time:.1f}s (Cycle {measurement_cycle})")
                             break  # Exit scan loop
-                        
+
                         master_config['last_voltage'] = voltage
                 else:
                     # No scans available while armed - small sleep to avoid busy waiting
+                    logger.debug(f"[DEBUG] No new scans available while ARMED at {current_time:.1f}s.")
                     time.sleep(0.001)
-                
+
                 # Track voltage range
                 if trigger_armed and len(new_scans) > 0:
                     trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
@@ -417,7 +397,7 @@ class AcquisitionController:
                         v = scan[trigger_ch_idx]
                         voltage_min = min(voltage_min, v)
                         voltage_max = max(voltage_max, v)
-                
+
                 # Status update while armed
                 if trigger_armed and time.time() - last_status_time >= 5.0:
                     # Show all channel values from Board 1
@@ -425,14 +405,18 @@ class AcquisitionController:
                     if last_scan is not None:
                         ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" 
                                                for i, v in enumerate(last_scan)])
-                        logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [{voltage_min:.3f}V to {voltage_max:.3f}V]")
+                        if voltage_min != float('inf') and voltage_max != float('-inf'):
+                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [{voltage_min:.3f}V to {voltage_max:.3f}V]")
+                        else:
+                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [no new data]")
+                        logger.debug(f"[DEBUG] Status update while ARMED. Voltage min: {voltage_min}, max: {voltage_max}")
                         # Reset range for next period
                         voltage_min = float('inf')
                         voltage_max = float('-inf')
                     else:
                         logger.info(f"Status [{current_time:.1f}s]: [ARMED] Waiting for data from Board {master_board}")
                     last_status_time = time.time()
-                
+
                 # No sleep needed - read_new_data() is non-blocking
             
         except KeyboardInterrupt:
@@ -560,9 +544,9 @@ def main():
         # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
-            trigger_check_decimation=10,  # Check every 10th sample = 10,000 checks/sec
+            trigger_check_decimation=5,  # Check every 5th sample = 200,000 checks/sec
             time_between_points=30.0,
-            total_duration_minutes=120  # Run for 120 minutes
+            total_duration_minutes=120  # Run for 120 minutes, 2 hours (None = run indefinitely)
         )
         
     except KeyboardInterrupt:

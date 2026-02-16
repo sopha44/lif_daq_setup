@@ -241,81 +241,73 @@ class MCCDevice:
         """
         Read new data since last read. Returns list of scans.
         Each scan is a list of channel values.
+        Adds debug logging for buffer counts and scan status.
         """
         if not self.is_scanning or not self.ctypes_array:
             return []
-        
+
         status, curr_count, curr_index = self.get_status()
-        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[DEBUG] read_new_data: status={status}, curr_count={curr_count}, curr_index={curr_index}, last_read_index={self.last_read_index}, total_count={self.total_count}")
+
         if curr_count == 0:
+            logger.debug("[DEBUG] read_new_data: curr_count == 0, no data yet.")
             return []  # No data yet
-        
-        # Align curr_index to last complete scan boundary
-        # curr_index points to the last sample, which might be mid-scan
-        # We need to find the index of the last channel of the last complete scan
+
         complete_scans = curr_count // self.num_chans
+        logger.debug(f"[DEBUG] read_new_data: complete_scans={complete_scans}")
         if complete_scans == 0:
+            logger.debug("[DEBUG] read_new_data: complete_scans == 0, no complete scans yet.")
             return []  # No complete scans yet
-        
-        # Calculate the index of the last sample in the last complete scan
+
         last_complete_index = (complete_scans * self.num_chans) - 1
-        
-        # Check if we've already read this data
+        logger.debug(f"[DEBUG] read_new_data: last_complete_index={last_complete_index}")
+
         if self.last_read_index == last_complete_index:
+            logger.debug("[DEBUG] read_new_data: No new complete scans since last read.")
             return []  # No new complete scans
-        
-        # First read - initialize
+
         if self.last_read_index == -1:
             self.last_read_index = -1  # Will start from index 0
-        
-        # Calculate new complete scans available
+
         if self.last_read_index == -1:
-            # First read - read all complete scans
             start_index = 0
             num_new_scans = complete_scans
         else:
-            # Calculate how many new complete scans since last read
             start_index = self.last_read_index + 1
             new_samples = last_complete_index - self.last_read_index
             num_new_scans = new_samples // self.num_chans
-        
-        # IMPORTANT: Limit to max 10000 scans to prevent hanging on large buffers
-        # In continuous mode, we only care about recent data for trigger detection
+
         MAX_SCANS_PER_READ = 10000
         if num_new_scans > MAX_SCANS_PER_READ:
-            # Skip to most recent scans
             start_index = last_complete_index - (MAX_SCANS_PER_READ * self.num_chans) + 1
             num_new_scans = MAX_SCANS_PER_READ
-        
+
+        logger.debug(f"[DEBUG] read_new_data: num_new_scans={num_new_scans}, start_index={start_index}")
         if num_new_scans <= 0:
+            logger.debug("[DEBUG] read_new_data: num_new_scans <= 0, nothing to read.")
             return []
-        
+
         scans = []
-        
         for scan_num in range(num_new_scans):
             scan_data = []
             for ch_offset in range(self.num_chans):
-                # Calculate index with wraparound
                 idx = (start_index + scan_num * self.num_chans + ch_offset) % self.total_count
-                
                 if self.scan_options & ScanOptions.SCALEDATA:
-                    # Data already in engineering units
                     value = self.ctypes_array[idx]
                 else:
-                    # Convert to engineering units
                     value = ul.to_eng_units(
                         self.board_num,
                         self.ai_range,
                         self.ctypes_array[idx]
                     )
                 scan_data.append(value)
-            
             if len(scan_data) == self.num_chans:
                 scans.append(scan_data)
-        
-        # Update last read index to the last sample of the last complete scan we read
+
         self.last_read_index = last_complete_index
-        
+        logger.debug(f"[DEBUG] read_new_data: returning {len(scans)} scans.")
         return scans
     
     def read_buffer_data(self, num_samples: Optional[int] = None) -> Optional[np.ndarray]:
