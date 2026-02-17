@@ -42,11 +42,11 @@ def main():
         # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
-            trigger_check_decimation=5,  # Check every 5th sample = 200,000 checks/sec
-            time_between_points=30.0,
+            trigger_check_decimation=1,  # Check every 5th sample = 200,000 checks/sec
+            time_between_points=1,
             total_duration_minutes=120  # Run for 120 minutes, 2 hours (None = run indefinitely)
         )
-        
+
     except KeyboardInterrupt:
         logger.info("Acquisition interrupted by user")
     except Exception as e:

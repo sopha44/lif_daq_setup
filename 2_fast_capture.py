@@ -1,5 +1,5 @@
 from acquisition_controller import AcquisitionController
-from utils.logging_setup import setup_logging
+from utils.logging_setup import setup_logging, suppress_console_logging, restore_console_logging
 import config
 import logging
 
@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 def main():
     """Main entry point for running acquisition (slow capture)."""
     setup_logging(log_level=config.LOG_LEVEL, log_to_file=config.LOG_TO_FILE)
+
     controller = AcquisitionController()
     try:
         # Setup each DAQ with its specific configuration
@@ -38,13 +39,18 @@ def main():
             enable_processing=False
         )
         
+        # Suppress console output, keep logging to file, effort to minimize overhead during high-speed acquisition
+        suppress_console_logging()
+
         # Start acquisition with time-gated triggering
         # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
+            restart_scan_each_trigger=False,  # Keep scan running, just check for trigger condition
+            check_buffer_every=10,  # 0 = disabled, >0 = check buffer every N cycles
             trigger_check_decimation=1,  # Check every sample = 1,000,000 checks/sec
             time_between_points=0.0, 
-            total_duration_minutes=10  # Run for 10 minutes (None = run indefinitely)
+            total_duration_minutes=10,  # Run for 10 minutes (None = run indefinitely)
         )
         
     except KeyboardInterrupt:
@@ -52,6 +58,9 @@ def main():
     except Exception as e:
         logger.error(f"Acquisition failed: {e}")
         raise
+    finally:
+        # Restore console logging if you want to re-enable output after acquisition
+        restore_console_logging()
 
 if __name__ == '__main__':
     main()

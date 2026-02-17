@@ -1,3 +1,22 @@
+def suppress_console_logging():
+    """
+    Temporarily suppress all logging output to the console (StreamHandler), but keep file logging.
+    """
+    import logging
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setLevel(logging.CRITICAL + 1)
+
+def restore_console_logging(level=None):
+    """
+    Restore logging output to the console (StreamHandler) at the given level (default: INFO).
+    """
+    import logging
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setLevel(level if level is not None else logging.INFO)
 """
 Logging setup utilities for DAQ acquisition system.
 Provides consistent logging configuration across all modules.
