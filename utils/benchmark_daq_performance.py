@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 
 def benchmark_sample_rate(device, board_num: int, sample_rate: int, num_channels: int = 3, 
-                          duration: float = 5.0):
+                          duration: float = 5.0, write_to_csv: bool = False, csv_path: Path = None):
     """
     Benchmark a specific sample rate.
     
@@ -69,18 +69,33 @@ def benchmark_sample_rate(device, board_num: int, sample_rate: int, num_channels
         last_status_check = start_time
         first_read_logged = False
         
+        if write_to_csv and csv_path is not None:
+            import csv
+            csv_file = open(csv_path, 'w', newline='')
+            csv_writer = csv.writer(csv_file)
+            # Write header
+            header = [f'CH{i}' for i in range(num_channels)]
+            csv_writer.writerow(header)
+        else:
+            csv_file = None
+            csv_writer = None
+
         while time.time() - start_time < duration:
             try:
                 new_data = device.read_new_data()
                 num_new = len(new_data)
                 total_scans += num_new
                 total_reads += 1
-                
+
+                # Write to CSV if enabled
+                if write_to_csv and csv_writer and num_new > 0:
+                    csv_writer.writerows(new_data)
+
                 # Log first read for debugging
                 if not first_read_logged and num_new > 0:
                     logger.info(f"First read got {num_new} scans at time {time.time() - start_time:.3f}s")
                     first_read_logged = True
-                
+
                 # Check buffer status only every 0.5 seconds to reduce overhead
                 current_time = time.time()
                 if current_time - last_status_check >= 0.5:
@@ -88,19 +103,27 @@ def benchmark_sample_rate(device, board_num: int, sample_rate: int, num_channels
                         device.board_num, 
                         FunctionType.AIFUNCTION
                     )
-                    
+
                     # Calculate buffer usage percentage (total_count is the buffer size)
                     buffer_usage = (curr_count / device.total_count) * 100
                     max_buffer_usage = max(max_buffer_usage, buffer_usage)
                     last_status_check = current_time
-                
+
             except Exception as e:
                 errors.append(str(e))
                 logger.error(f"Error during data read: {e}")
                 break
-            
-            # Small sleep to prevent excessive overhead (matches acquisition_controller)
-            time.sleep(0.001)
+
+            # Small sleep to prevent excessive overhead
+            time.sleep(0.00001) #10us
+
+        # Read any remaining data in the buffer before stopping
+        final_data = device.read_new_data()
+        total_scans += len(final_data)
+        if write_to_csv and csv_writer and len(final_data) > 0:
+            csv_writer.writerows(final_data)
+        if csv_file:
+            csv_file.close()
         
         # Read any remaining data in the buffer before stopping
         final_data = device.read_new_data()
@@ -158,7 +181,7 @@ def benchmark_sample_rate(device, board_num: int, sample_rate: int, num_channels
         return None
 
 
-def run_full_benchmark(board_num: int = 2):
+def run_full_benchmark(board_num: int = 2, write_to_csv: bool = False, duration: float = 5.0):
     """
     Run comprehensive benchmark across multiple sample rates.
     
@@ -182,7 +205,7 @@ def run_full_benchmark(board_num: int = 2):
     logger.info(f"# DAQ PERFORMANCE BENCHMARK")
     logger.info(f"# Board: {board_num}")
     logger.info(f"# Channels: 3")
-    logger.info(f"# Test duration: 5 seconds per rate")
+    logger.info(f"# Test duration: {duration} seconds per rate")
     logger.info(f"# {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"{'#'*70}\n")
     
@@ -194,22 +217,31 @@ def run_full_benchmark(board_num: int = 2):
     results = []
     
     for rate in test_rates:
+        csv_path = None
+        if write_to_csv:
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            csv_folder = Path('data/benchmark')
+            csv_folder.mkdir(parents=True, exist_ok=True)
+            csv_path = csv_folder / f"benchmark_{timestamp}_{rate}.csv"
+
         result = benchmark_sample_rate(
             device=device,
             board_num=board_num,
             sample_rate=rate,
             num_channels=3,
-            duration=5.0
+            duration=duration,
+            write_to_csv=write_to_csv,
+            csv_path=csv_path
         )
-        
+
         if result:
             results.append(result)
-            
+
             # Stop testing if we hit failures
             if not result['success']:
                 logger.warning(f"Failed at {rate:,} Hz - stopping benchmark")
                 break
-        
+
         # Pause between tests
         time.sleep(1.0)
     
@@ -240,7 +272,12 @@ def main():
     logger.info("Starting DAQ performance benchmark...")
     
     try:
-        results = run_full_benchmark(board_num=2) # USB-1604HS-2AO is board 2 in setup
+        # USB-1604HS-2AO is board 1 in setup
+        results = run_full_benchmark(
+            board_num=1,
+            write_to_csv=True, 
+            duration=10 # seconds of scan per test rate
+        ) 
         
         logger.info("\nBenchmark complete!")
         

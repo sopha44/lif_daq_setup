@@ -47,10 +47,10 @@ def main():
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
             restart_scan_each_trigger=False,  # Keep scan running, just check for trigger condition
-            check_buffer_every=10,  # 0 = disabled, >0 = check buffer every N cycles
+            check_buffer_every=0,  # 0 = disabled, >0 = check buffer every N cycles
             trigger_check_decimation=1,  # Check every sample = 1,000,000 checks/sec
             time_between_points=0.0, 
-            total_duration_minutes=10,  # Run for 10 minutes (None = run indefinitely)
+            total_duration_minutes=15,  # Run for 15 minutes (None = run indefinitely)
         )
         
     except KeyboardInterrupt:

@@ -22,6 +22,29 @@ logger = get_logger(__name__)
 
 
 class AcquisitionController:
+    def _add_file_log_handler(self, log_folder):
+        """
+        Add a file handler to the root logger for logging to a file in the specified folder.
+        Does not modify or reset console handlers.
+        """
+        import logging
+        import datetime
+        from pathlib import Path
+        LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+        TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
+        log_folder_path = Path(log_folder)
+        log_folder_path.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime(TIMESTAMP_FORMAT)
+        log_file = log_folder_path / f"daq_log_{timestamp}.log"
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(config.LOG_LEVEL)
+        file_formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+        file_handler.setFormatter(file_formatter)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(file_handler)
+        root_logger.info(f"Logging to file: {log_file}")
+
     def _save_continuous_sample(self, board_num, daq_config, sample_num, scan, timestamp):
         """
         Save a single scan/sample to the board's CSV file. Creates the file and header if needed.
@@ -111,6 +134,7 @@ class AcquisitionController:
         self.daq_configs[board_num] = config
     
     def start_acquisition(self, trigger_check_decimation: int = 20, time_between_points: float = 30.0, total_duration_minutes: float = None, restart_scan_each_trigger: bool = True, check_buffer_every: int = 0):
+        logger.info(f"=== LOGGING STARTED: start_acquisition(trigger_check_decimation={trigger_check_decimation}, time_between_points={time_between_points}, total_duration_minutes={total_duration_minutes}, restart_scan_each_trigger={restart_scan_each_trigger}, check_buffer_every={check_buffer_every}) ===")
         """
         Start time-gated trigger-based acquisition on all configured DAQs.
         Waits time_between_points seconds, then monitors Board 1 CH0 for trigger.
@@ -145,14 +169,18 @@ class AcquisitionController:
         logger.info("=" * 70)
         
         self.acquisition_start_time = datetime.now()
-        
+
         # Create timestamped folder for this acquisition run
         timestamp_str = self.acquisition_start_time.strftime("%Y-%m-%d_%H-%M-%S")
         data_folder = Path(config.DATA_FOLDER)
         self.acquisition_folder = data_folder / timestamp_str
         self.acquisition_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Saving data to: {self.acquisition_folder}")
-        
+
+        # Create a matching log folder inside the data folder for this run
+        log_folder = self.acquisition_folder / "logs"
+        self._add_file_log_handler(log_folder)
+
         try:
             # Step 1: Start scans on all configured devices
             logger.info("Starting background scans...")
@@ -223,12 +251,12 @@ class AcquisitionController:
             while True:
                 current_time = time.time() - start_time
                 current_datetime = self.acquisition_start_time + timedelta(seconds=current_time)
-                
+
                 # Check if total duration has elapsed
                 if end_time is not None and time.time() >= end_time:
                     logger.info(f"Total duration of {total_duration_minutes} minutes elapsed - ending acquisition")
                     break
-                
+
                 # Check if we should arm the trigger (after time_between_points has elapsed)
                 # Skip this check for the first cycle (last_measurement_time is None)
                 if last_measurement_time is not None:
@@ -239,7 +267,7 @@ class AcquisitionController:
                         voltage_min = float('inf')  # Reset voltage range for new cycle
                         voltage_max = float('-inf')
                         logger.info(f"[CYCLE {measurement_cycle}] Trigger armed after {time_since_last:.1f}s - waiting for trigger...")
-                
+
                 # Read new data from all boards
                 if not trigger_armed:
                     # During timing gate, keep most recent sample from slow boards, drain fast boards
@@ -249,7 +277,7 @@ class AcquisitionController:
                             # Keep the most recent scan for this board
                             daq_config['last_scan_during_gate'] = new_data[-1]
                     time.sleep(0.01)  # Small sleep during timing gate
-                    
+
                     # Status update during timing gate
                     if last_measurement_time is not None and time.time() - last_status_time >= 5.0:
                         time_since_last = time.time() - last_measurement_time
@@ -257,212 +285,323 @@ class AcquisitionController:
                         logger.info(f"Status: [TIMING GATE] Next cycle in {time_remaining:.1f}s (Cycle #{measurement_cycle})")
                         last_status_time = time.time()
                     continue
-                
+
                 # ARMED - read data from ALL boards first (don't drain yet)
                 all_board_data = {}
                 for board_num, daq_config in self.daq_configs.items():
                     scans = daq_config['device'].read_new_data()
                     logger.debug(f"[DEBUG] Board {board_num}: {len(scans)} scans read, device={daq_config['device']}.")
                     all_board_data[board_num] = scans
-                
+
                 # Check master board for trigger
                 new_scans = all_board_data[master_board]
-                
-                if len(new_scans) > 0:
-                    trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
-                    
-                    for idx, scan in enumerate(new_scans):
-                        voltage = scan[trigger_ch_idx]
-                        last_v = master_config.get('last_voltage', -10.0)  # Default to low value
-                        
-                        # Store last scan for status display
-                        master_config['last_scan'] = scan
-                        
-                        # Check for rising edge trigger on EVERY scan (no decimation)
-                        # We need to check every scan to catch fast pulses
-                        if last_v < master_config['trigger_voltage_high'] and \
-                           voltage >= master_config['trigger_voltage_high']:
-                            # Log time between triggers
-                            now = time.time()
-                            if last_trigger_time is not None:
-                                delta = now - last_trigger_time
-                                logger.info(f"[CYCLE {measurement_cycle}] Time since last trigger: {delta:.6f} s")
-                            last_trigger_time = now
-                            # TRIGGER DETECTED - Start acquisition window
-                            # Format all channel values for Board 1
-                            ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" 
-                                                   for i, v in enumerate(scan)])
-                            logger.info(f"[CYCLE {measurement_cycle}] Trigger detected! Board {master_board}: {ch_values}")
-                            
-                            # Calculate how many samples to collect
-                            # acquisition_window_us is the simultaneous window for all channels
-                            acquisition_window_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
-                            samples_to_collect = int(master_config['sample_rate'] * acquisition_window_s)
-                            scans_to_collect = samples_to_collect
-                            logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {acquisition_window_s*1000:.1f}ms...")
-                            
-                            # Use only the needed scans from this batch starting at trigger point
-                            acquisition_buffer = new_scans[idx:idx + scans_to_collect]
-                            acquisition_start = time.time()
-                            
-                            while len(acquisition_buffer) < scans_to_collect:
-                                elapsed = time.time() - acquisition_start
-                                if elapsed > 1.0:  # 1 second timeout (should only take milliseconds)
-                                    logger.warning(f"  Acquisition timeout after {elapsed:.1f}s! Got {len(acquisition_buffer)}/{scans_to_collect} scans")
-                                    break
-                                
-                                # Read more data
-                                new_data = master_config['device'].read_new_data()
-                                if len(new_data) > 0:
-                                    acquisition_buffer.extend(new_data[:scans_to_collect - len(acquisition_buffer)])
-                                else:
-                                    time.sleep(0.00001)  # Small sleep if no data, 10us
-                            
-                            logger.info(f"  Board {master_board}: Collected {len(acquisition_buffer)} samples in {(time.time()-acquisition_start)*1000:.1f}ms")
-                            
-                            # Save all collected samples for Board 1
-                            for acq_scan in acquisition_buffer:
-                                self._save_continuous_sample(master_board, master_config, 
-                                                            measurement_cycle, 
-                                                            acq_scan, 
-                                                            current_datetime)
 
-                            # Save single measurement from other boards
-                            for b_num, b_config in self.daq_configs.items():
-                                if b_num == master_board:
-                                    continue  # Already saved
-                                board_scans = all_board_data[b_num]
-                                if len(board_scans) == 0 and 'last_scan_during_gate' in b_config:
-                                    board_scans = [b_config['last_scan_during_gate']]
-                                    logger.info(f"  Board {b_num}: Using saved data from timing gate")
-                                if len(board_scans) > 0:
-                                    measurement = board_scans[-1]
-                                    self._save_continuous_sample(b_num, b_config, 
-                                                                measurement_cycle, 
-                                                                measurement, 
-                                                                current_datetime)
-                                    logger.info(f"  Board {b_num}: {measurement}")
-                                else:
-                                    try:
-                                        device = b_config['device']
-                                        if hasattr(device, 'read_single_value'):
-                                            direct_values = []
-                                            for ch in range(b_config['low_chan'], b_config['high_chan'] + 1):
-                                                val = device.read_single_value(ch)
-                                                direct_values.append(val)
-                                            self._save_continuous_sample(b_num, b_config, 
-                                                                        measurement_cycle, 
-                                                                        direct_values, 
-                                                                        current_datetime)
-                                            logger.info(f"  Board {b_num}: {direct_values} (read directly)")
-                                        else:
-                                            logger.warning(f"  Board {b_num}: No data available!")
-                                    except Exception as e:
-                                        logger.warning(f"  Board {b_num}: No data available! ({e})")
-
-
-                            # Optionally stop and restart scan for all boards (buffer reset)
-                            if restart_scan_each_trigger:
-                                for board_num, daq_config in self.daq_configs.items():
-                                    try:
-                                        daq_config['device'].stop_scan()
-                                        logger.info(f"  Board {board_num}: Scan stopped for buffer reset.")
-                                        is_temp_device = 'TEMP' in daq_config['name'].upper()
-                                        if is_temp_device:
-                                            daq_config['device'].start_scan(
-                                                low_chan=daq_config['low_chan'],
-                                                high_chan=daq_config['high_chan'],
-                                                rate=daq_config['sample_rate'],
-                                                points_per_channel=daq_config['points_per_channel']
-                                            )
-                                            logger.info(f"  Board {board_num}: Scan restarted (Temperature device)")
-                                        else:
-                                            daq_config['device'].start_scan(
-                                                low_chan=daq_config['low_chan'],
-                                                high_chan=daq_config['high_chan'],
-                                                rate=daq_config['sample_rate'],
-                                                points_per_channel=daq_config['points_per_channel'],
-                                                ai_range=ULRange.BIP10VOLTS
-                                            )
-                                            logger.info(f"  Board {board_num}: Scan restarted (Analog input device)")
-                                    except Exception as e:
-                                        logger.error(f"  Board {board_num}: Error stopping/restarting scan: {e}")
-
-                            # Reset for next cycle
-                            trigger_armed = False
-                            last_measurement_time = time.time()
-                            master_config['last_voltage'] = voltage
-                            logger.info(f"[CYCLE {measurement_cycle}] Complete - waiting {time_between_points}s for next cycle")
-                            logger.debug(f"[DEBUG] Trigger disarmed at {current_time:.1f}s (Cycle {measurement_cycle})")
-                            break  # Exit scan loop
-
-                        master_config['last_voltage'] = voltage
-
-                        # Buffer check logic
-                        if check_buffer_every > 0:
-                            buffer_check_counter += 1
-                            if buffer_check_counter % check_buffer_every == 0:
-                                for board_num, daq_config in self.daq_configs.items():
-                                    device = daq_config['device']
-                                    if hasattr(device, 'get_status') and hasattr(device, 'total_count'):
+                # --- Optimized trigger check logic ---
+                if self.trigger_check_decimation == 1:
+                    # Fastest path: check every scan, no decimation logic
+                    if len(new_scans) > 0:
+                        trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
+                        for idx, scan in enumerate(new_scans):
+                            voltage = scan[trigger_ch_idx]
+                            last_v = master_config.get('last_voltage', -10.0)
+                            master_config['last_scan'] = scan
+                            if last_v < master_config['trigger_voltage_high'] and voltage >= master_config['trigger_voltage_high']:
+                                now = time.time()
+                                if last_trigger_time is not None:
+                                    delta = now - last_trigger_time
+                                    logger.info(f"[CYCLE {measurement_cycle}] Time since last trigger: {delta:.6f} s")
+                                last_trigger_time = now
+                                ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" for i, v in enumerate(scan)])
+                                logger.info(f"[CYCLE {measurement_cycle}] Trigger detected! Board {master_board}: {ch_values}")
+                                acquisition_window_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
+                                samples_to_collect = int(master_config['sample_rate'] * acquisition_window_s)
+                                scans_to_collect = samples_to_collect
+                                logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {acquisition_window_s*1000:.1f}ms...")
+                                acquisition_buffer = new_scans[idx:idx + scans_to_collect]
+                                acquisition_start = time.time()
+                                while len(acquisition_buffer) < scans_to_collect:
+                                    elapsed = time.time() - acquisition_start
+                                    if elapsed > 1.0:
+                                        logger.warning(f"  Acquisition timeout after {elapsed:.1f}s! Got {len(acquisition_buffer)}/{scans_to_collect} scans")
+                                        break
+                                    new_data = master_config['device'].read_new_data()
+                                    if len(new_data) > 0:
+                                        acquisition_buffer.extend(new_data[:scans_to_collect - len(acquisition_buffer)])
+                                    else:
+                                        time.sleep(0.00001)
+                                logger.info(f"  Board {master_board}: Collected {len(acquisition_buffer)} samples in {(time.time()-acquisition_start)*1000:.1f}ms")
+                                for acq_scan in acquisition_buffer:
+                                    self._save_continuous_sample(master_board, master_config, measurement_cycle, acq_scan, current_datetime)
+                                for b_num, b_config in self.daq_configs.items():
+                                    if b_num == master_board:
+                                        continue
+                                    board_scans = all_board_data[b_num]
+                                    if len(board_scans) == 0 and 'last_scan_during_gate' in b_config:
+                                        board_scans = [b_config['last_scan_during_gate']]
+                                        logger.info(f"  Board {b_num}: Using saved data from timing gate")
+                                    if len(board_scans) > 0:
+                                        measurement = board_scans[-1]
+                                        self._save_continuous_sample(b_num, b_config, measurement_cycle, measurement, current_datetime)
+                                        logger.info(f"  Board {b_num}: {measurement}")
+                                    else:
                                         try:
-                                            status, curr_count, curr_index = device.get_status()
-                                            buffer_usage_pct = (curr_count / device.total_count) * 100
-                                            logger.info(f"[BUFFER CHECK] Board {board_num}: {buffer_usage_pct:.1f}% full")
-                                            if buffer_usage_pct > 90:
-                                                logger.warning(f"[BUFFER CHECK] Board {board_num}: Buffer >90% full, restarting scan!")
-                                                device.stop_scan()
-                                                is_temp_device = 'TEMP' in daq_config['name'].upper()
-                                                if is_temp_device:
-                                                    device.start_scan(
-                                                        low_chan=daq_config['low_chan'],
-                                                        high_chan=daq_config['high_chan'],
-                                                        rate=daq_config['sample_rate'],
-                                                        points_per_channel=daq_config['points_per_channel']
-                                                    )
-                                                else:
-                                                    device.start_scan(
-                                                        low_chan=daq_config['low_chan'],
-                                                        high_chan=daq_config['high_chan'],
-                                                        rate=daq_config['sample_rate'],
-                                                        points_per_channel=daq_config['points_per_channel'],
-                                                        ai_range=ULRange.BIP10VOLTS
-                                                    )
+                                            device = b_config['device']
+                                            if hasattr(device, 'read_single_value'):
+                                                direct_values = []
+                                                for ch in range(b_config['low_chan'], b_config['high_chan'] + 1):
+                                                    val = device.read_single_value(ch)
+                                                    direct_values.append(val)
+                                                self._save_continuous_sample(b_num, b_config, measurement_cycle, direct_values, current_datetime)
+                                                logger.info(f"  Board {b_num}: {direct_values} (read directly)")
+                                            else:
+                                                logger.warning(f"  Board {b_num}: No data available!")
                                         except Exception as e:
-                                            logger.error(f"[BUFFER CHECK] Board {board_num}: Error checking/restarting buffer: {e}")
-                else:
-                    # No scans available while armed - small sleep to avoid busy waiting
-                    logger.debug(f"[DEBUG] No new scans available while ARMED at {current_time:.1f}s.")
-                    time.sleep(0.00001)
-
-                # Track voltage range
-                if trigger_armed and len(new_scans) > 0:
-                    trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
-                    for scan in new_scans:
-                        v = scan[trigger_ch_idx]
-                        voltage_min = min(voltage_min, v)
-                        voltage_max = max(voltage_max, v)
-
-                # Status update while armed
-                if trigger_armed and time.time() - last_status_time >= 5.0:
-                    # Show all channel values from Board 1
-                    last_scan = master_config.get('last_scan', None)
-                    if last_scan is not None:
-                        ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" 
-                                               for i, v in enumerate(last_scan)])
-                        if voltage_min != float('inf') and voltage_max != float('-inf'):
-                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [{voltage_min:.3f}V to {voltage_max:.3f}V]")
-                        else:
-                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [no new data]")
-                        logger.debug(f"[DEBUG] Status update while ARMED. Voltage min: {voltage_min}, max: {voltage_max}")
-                        # Reset range for next period
-                        voltage_min = float('inf')
-                        voltage_max = float('-inf')
+                                            logger.warning(f"  Board {b_num}: No data available! ({e})")
+                                if restart_scan_each_trigger:
+                                    for board_num, daq_config in self.daq_configs.items():
+                                        try:
+                                            daq_config['device'].stop_scan()
+                                            logger.info(f"  Board {board_num}: Scan stopped for buffer reset.")
+                                            is_temp_device = 'TEMP' in daq_config['name'].upper()
+                                            if is_temp_device:
+                                                daq_config['device'].start_scan(
+                                                    low_chan=daq_config['low_chan'],
+                                                    high_chan=daq_config['high_chan'],
+                                                    rate=daq_config['sample_rate'],
+                                                    points_per_channel=daq_config['points_per_channel']
+                                                )
+                                                logger.info(f"  Board {board_num}: Scan restarted (Temperature device)")
+                                            else:
+                                                daq_config['device'].start_scan(
+                                                    low_chan=daq_config['low_chan'],
+                                                    high_chan=daq_config['high_chan'],
+                                                    rate=daq_config['sample_rate'],
+                                                    points_per_channel=daq_config['points_per_channel'],
+                                                    ai_range=ULRange.BIP10VOLTS
+                                                )
+                                                logger.info(f"  Board {board_num}: Scan restarted (Analog input device)")
+                                        except Exception as e:
+                                            logger.error(f"  Board {board_num}: Error stopping/restarting scan: {e}")
+                                trigger_armed = False
+                                last_measurement_time = time.time()
+                                master_config['last_voltage'] = voltage
+                                logger.info(f"[CYCLE {measurement_cycle}] Complete - waiting {time_between_points}s for next cycle")
+                                logger.debug(f"[DEBUG] Trigger disarmed at {current_time:.1f}s (Cycle {measurement_cycle})")
+                                break
+                            master_config['last_voltage'] = voltage
+                            # Buffer check logic
+                            if check_buffer_every > 0:
+                                buffer_check_counter += 1
+                                if buffer_check_counter % check_buffer_every == 0:
+                                    for board_num, daq_config in self.daq_configs.items():
+                                        device = daq_config['device']
+                                        if hasattr(device, 'get_status') and hasattr(device, 'total_count'):
+                                            try:
+                                                status, curr_count, curr_index = device.get_status()
+                                                buffer_usage_pct = (curr_count / device.total_count) * 100
+                                                logger.info(f"[BUFFER CHECK] Board {board_num}: {buffer_usage_pct:.1f}% full")
+                                                if buffer_usage_pct > 90:
+                                                    logger.warning(f"[BUFFER CHECK] Board {board_num}: Buffer >90% full, restarting scan!")
+                                                    device.stop_scan()
+                                                    is_temp_device = 'TEMP' in daq_config['name'].upper()
+                                                    if is_temp_device:
+                                                        device.start_scan(
+                                                            low_chan=daq_config['low_chan'],
+                                                            high_chan=daq_config['high_chan'],
+                                                            rate=daq_config['sample_rate'],
+                                                            points_per_channel=daq_config['points_per_channel']
+                                                        )
+                                                    else:
+                                                        device.start_scan(
+                                                            low_chan=daq_config['low_chan'],
+                                                            high_chan=daq_config['high_chan'],
+                                                            rate=daq_config['sample_rate'],
+                                                            points_per_channel=daq_config['points_per_channel'],
+                                                            ai_range=ULRange.BIP10VOLTS
+                                                        )
+                                            except Exception as e:
+                                                logger.error(f"[BUFFER CHECK] Board {board_num}: Error checking/restarting buffer: {e}")
                     else:
-                        logger.info(f"Status [{current_time:.1f}s]: [ARMED] Waiting for data from Board {master_board}")
-                    last_status_time = time.time()
-
-                # No sleep needed - read_new_data() is non-blocking
+                        # No scans available while armed - small sleep to avoid busy waiting
+                        logger.debug(f"[DEBUG] No new scans available while ARMED at {current_time:.1f}s.")
+                        time.sleep(0.00001)
+                    # Track voltage range
+                    if trigger_armed and len(new_scans) > 0:
+                        trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
+                        for scan in new_scans:
+                            v = scan[trigger_ch_idx]
+                            voltage_min = min(voltage_min, v)
+                            voltage_max = max(voltage_max, v)
+                    # Status update while armed
+                    if trigger_armed and time.time() - last_status_time >= 5.0:
+                        last_scan = master_config.get('last_scan', None)
+                        if last_scan is not None:
+                            ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" for i, v in enumerate(last_scan)])
+                            if voltage_min != float('inf') and voltage_max != float('-inf'):
+                                logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [{voltage_min:.3f}V to {voltage_max:.3f}V]")
+                            else:
+                                logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [no new data]")
+                            logger.debug(f"[DEBUG] Status update while ARMED. Voltage min: {voltage_min}, max: {voltage_max}")
+                            voltage_min = float('inf')
+                            voltage_max = float('-inf')
+                        else:
+                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Waiting for data from Board {master_board}")
+                        last_status_time = time.time()
+                    # No sleep needed - read_new_data() is non-blocking
+                else:
+                    # Decimation logic for trigger_check_decimation > 1
+                    trigger_ch_idx = master_config['trigger_channel'] - master_config['low_chan']
+                    decimation_counter = 0
+                    if len(new_scans) > 0:
+                        for idx, scan in enumerate(new_scans):
+                            decimation_counter += 1
+                            if decimation_counter % self.trigger_check_decimation != 0:
+                                continue
+                            voltage = scan[trigger_ch_idx]
+                            last_v = master_config.get('last_voltage', -10.0)
+                            master_config['last_scan'] = scan
+                            if last_v < master_config['trigger_voltage_high'] and voltage >= master_config['trigger_voltage_high']:
+                                now = time.time()
+                                if last_trigger_time is not None:
+                                    delta = now - last_trigger_time
+                                    logger.info(f"[CYCLE {measurement_cycle}] Time since last trigger: {delta:.6f} s")
+                                last_trigger_time = now
+                                ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" for i, v in enumerate(scan)])
+                                logger.info(f"[CYCLE {measurement_cycle}] Trigger detected! Board {master_board}: {ch_values}")
+                                acquisition_window_s = master_config.get('acquisition_window_us', 1000000.0) / 1e6
+                                samples_to_collect = int(master_config['sample_rate'] * acquisition_window_s)
+                                scans_to_collect = samples_to_collect
+                                logger.info(f"  Collecting {scans_to_collect} scans ({samples_to_collect} samples) over {acquisition_window_s*1000:.1f}ms...")
+                                acquisition_buffer = new_scans[idx:idx + scans_to_collect]
+                                acquisition_start = time.time()
+                                while len(acquisition_buffer) < scans_to_collect:
+                                    elapsed = time.time() - acquisition_start
+                                    if elapsed > 1.0:
+                                        logger.warning(f"  Acquisition timeout after {elapsed:.1f}s! Got {len(acquisition_buffer)}/{scans_to_collect} scans")
+                                        break
+                                    new_data = master_config['device'].read_new_data()
+                                    if len(new_data) > 0:
+                                        acquisition_buffer.extend(new_data[:scans_to_collect - len(acquisition_buffer)])
+                                    else:
+                                        time.sleep(0.00001)
+                                logger.info(f"  Board {master_board}: Collected {len(acquisition_buffer)} samples in {(time.time()-acquisition_start)*1000:.1f}ms")
+                                for acq_scan in acquisition_buffer:
+                                    self._save_continuous_sample(master_board, master_config, measurement_cycle, acq_scan, current_datetime)
+                                for b_num, b_config in self.daq_configs.items():
+                                    if b_num == master_board:
+                                        continue
+                                    board_scans = all_board_data[b_num]
+                                    if len(board_scans) == 0 and 'last_scan_during_gate' in b_config:
+                                        board_scans = [b_config['last_scan_during_gate']]
+                                        logger.info(f"  Board {b_num}: Using saved data from timing gate")
+                                    if len(board_scans) > 0:
+                                        measurement = board_scans[-1]
+                                        self._save_continuous_sample(b_num, b_config, measurement_cycle, measurement, current_datetime)
+                                        logger.info(f"  Board {b_num}: {measurement}")
+                                    else:
+                                        try:
+                                            device = b_config['device']
+                                            if hasattr(device, 'read_single_value'):
+                                                direct_values = []
+                                                for ch in range(b_config['low_chan'], b_config['high_chan'] + 1):
+                                                    val = device.read_single_value(ch)
+                                                    direct_values.append(val)
+                                                self._save_continuous_sample(b_num, b_config, measurement_cycle, direct_values, current_datetime)
+                                                logger.info(f"  Board {b_num}: {direct_values} (read directly)")
+                                            else:
+                                                logger.warning(f"  Board {b_num}: No data available!")
+                                        except Exception as e:
+                                            logger.warning(f"  Board {b_num}: No data available! ({e})")
+                                if restart_scan_each_trigger:
+                                    for board_num, daq_config in self.daq_configs.items():
+                                        try:
+                                            daq_config['device'].stop_scan()
+                                            logger.info(f"  Board {board_num}: Scan stopped for buffer reset.")
+                                            is_temp_device = 'TEMP' in daq_config['name'].upper()
+                                            if is_temp_device:
+                                                daq_config['device'].start_scan(
+                                                    low_chan=daq_config['low_chan'],
+                                                    high_chan=daq_config['high_chan'],
+                                                    rate=daq_config['sample_rate'],
+                                                    points_per_channel=daq_config['points_per_channel']
+                                                )
+                                                logger.info(f"  Board {board_num}: Scan restarted (Temperature device)")
+                                            else:
+                                                daq_config['device'].start_scan(
+                                                    low_chan=daq_config['low_chan'],
+                                                    high_chan=daq_config['high_chan'],
+                                                    rate=daq_config['sample_rate'],
+                                                    points_per_channel=daq_config['points_per_channel'],
+                                                    ai_range=ULRange.BIP10VOLTS
+                                                )
+                                                logger.info(f"  Board {board_num}: Scan restarted (Analog input device)")
+                                        except Exception as e:
+                                            logger.error(f"  Board {board_num}: Error stopping/restarting scan: {e}")
+                                trigger_armed = False
+                                last_measurement_time = time.time()
+                                master_config['last_voltage'] = voltage
+                                logger.info(f"[CYCLE {measurement_cycle}] Complete - waiting {time_between_points}s for next cycle")
+                                logger.debug(f"[DEBUG] Trigger disarmed at {current_time:.1f}s (Cycle {measurement_cycle})")
+                                break
+                            master_config['last_voltage'] = voltage
+                            # Buffer check logic
+                            if check_buffer_every > 0:
+                                buffer_check_counter += 1
+                                if buffer_check_counter % check_buffer_every == 0:
+                                    for board_num, daq_config in self.daq_configs.items():
+                                        device = daq_config['device']
+                                        if hasattr(device, 'get_status') and hasattr(device, 'total_count'):
+                                            try:
+                                                status, curr_count, curr_index = device.get_status()
+                                                buffer_usage_pct = (curr_count / device.total_count) * 100
+                                                logger.info(f"[BUFFER CHECK] Board {board_num}: {buffer_usage_pct:.1f}% full")
+                                                if buffer_usage_pct > 90:
+                                                    logger.warning(f"[BUFFER CHECK] Board {board_num}: Buffer >90% full, restarting scan!")
+                                                    device.stop_scan()
+                                                    is_temp_device = 'TEMP' in daq_config['name'].upper()
+                                                    if is_temp_device:
+                                                        device.start_scan(
+                                                            low_chan=daq_config['low_chan'],
+                                                            high_chan=daq_config['high_chan'],
+                                                            rate=daq_config['sample_rate'],
+                                                            points_per_channel=daq_config['points_per_channel']
+                                                        )
+                                                    else:
+                                                        device.start_scan(
+                                                            low_chan=daq_config['low_chan'],
+                                                            high_chan=daq_config['high_chan'],
+                                                            rate=daq_config['sample_rate'],
+                                                            points_per_channel=daq_config['points_per_channel'],
+                                                            ai_range=ULRange.BIP10VOLTS
+                                                        )
+                                            except Exception as e:
+                                                logger.error(f"[BUFFER CHECK] Board {board_num}: Error checking/restarting buffer: {e}")
+                    else:
+                        # No scans available while armed - small sleep to avoid busy waiting
+                        logger.debug(f"[DEBUG] No new scans available while ARMED at {current_time:.1f}s.")
+                        time.sleep(0.00001)
+                    # Track voltage range
+                    if trigger_armed and len(new_scans) > 0:
+                        for scan in new_scans:
+                            v = scan[trigger_ch_idx]
+                            voltage_min = min(voltage_min, v)
+                            voltage_max = max(voltage_max, v)
+                    # Status update while armed
+                    if trigger_armed and time.time() - last_status_time >= 5.0:
+                        last_scan = master_config.get('last_scan', None)
+                        if last_scan is not None:
+                            ch_values = ", ".join([f"CH{master_config['low_chan']+i}={v:.3f}V" for i, v in enumerate(last_scan)])
+                            if voltage_min != float('inf') and voltage_max != float('-inf'):
+                                logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [{voltage_min:.3f}V to {voltage_max:.3f}V]")
+                            else:
+                                logger.info(f"Status [{current_time:.1f}s]: [ARMED] Board {master_board}: {ch_values} | Range: [no new data]")
+                            logger.debug(f"[DEBUG] Status update while ARMED. Voltage min: {voltage_min}, max: {voltage_max}")
+                            voltage_min = float('inf')
+                            voltage_max = float('-inf')
+                        else:
+                            logger.info(f"Status [{current_time:.1f}s]: [ARMED] Waiting for data from Board {master_board}")
+                        last_status_time = time.time()
+                    # No sleep needed - read_new_data() is non-blocking
             
         except KeyboardInterrupt:
             logger.info("Acquisition interrupted by user (Ctrl+C)")

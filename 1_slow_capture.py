@@ -42,8 +42,10 @@ def main():
         # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
-            trigger_check_decimation=1,  # Check every 5th sample = 200,000 checks/sec
-            time_between_points=1,
+            restart_scan_each_trigger=True,  # Keep scan running, just check for trigger condition
+            check_buffer_every=1000,  # 0 = disabled, >0 = check buffer every N cycles
+            trigger_check_decimation=10,  # Check every 10th sample = 100,000 checks/sec
+            time_between_points=30.0,  # Wait 30 seconds between measurement cycles
             total_duration_minutes=120  # Run for 120 minutes, 2 hours (None = run indefinitely)
         )
 
