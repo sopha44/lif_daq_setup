@@ -10,10 +10,10 @@ import numpy as np
 # Set axis limits for each plot column (None for auto)
 # Example: (xmin, xmax, ymin, ymax, ymin2, ymax2)
 AXES_LIMITS = [
-    (0, 120, 23, 33, 480, 510),  # Plot 1
-    (0, 120, 23, 33, 375, 490),  # Plot 2
-    (0, 120, 23, 33, 105, 115),  # Plot 3
-    (0, 120, 23, 33, 125, 160),  # Plot 4
+    (0, 120, 21, 37, 450, 550),  # Plot 1
+    (0, 120, 21, 37, 60, 275),  # Plot 2
+    (0, 120, 21, 37, 90, 110),  # Plot 3
+    (0, 120, 21, 37, 45, 75),  # Plot 4
 ]
 
 # --- File selection dialog ---

@@ -11,9 +11,9 @@ AREA_COLS = ['Area_Trigger', 'Area_PD_Ext', 'Area_Laser_A', 'Area_PD_Int']
 # Y-axis limits for 2x2 grid plots (edit as needed)
 Y_LIMS_4X = [
     (450, 550),  # Plot 1
-    (330, 550),  # Plot 2
-    (110, 120),  # Plot 3
-    (110, 180),  # Plot 4
+    (60, 275),  # Plot 2
+    (90, 110),  # Plot 3
+    (45, 75),  # Plot 4
 ]
 
 # Select file

@@ -5,6 +5,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+#TODO: implement MCC scan with EXTTRIGGER and RETRIGMODE, takes trigger logic out of python and onto DAQ. See a_in_scan() https://github.com/mccdaq/mcculw/blob/master/mcculw/ul.py
+
 def main():
     """Main entry point for running acquisition (slow capture)."""
     setup_logging(log_level=config.LOG_LEVEL, log_to_file=config.LOG_TO_FILE)
