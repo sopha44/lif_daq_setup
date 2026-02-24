@@ -1,68 +1,57 @@
+
 from acquisition_controller import AcquisitionController
-from utils.logging_setup import setup_logging, suppress_console_logging, restore_console_logging
 import config
-import logging
 
-logger = logging.getLogger(__name__)
-
-#TODO: implement MCC scan with EXTTRIGGER and RETRIGMODE, takes trigger logic out of python and onto DAQ. See a_in_scan() https://github.com/mccdaq/mcculw/blob/master/mcculw/ul.py
+#TODO: implement MCC scan with EXTTRIGGER and RETRIGMODE, takes re-arming trigger logic out of python and onto DAQ.
+# See a_in_scan() https://github.com/mccdaq/mcculw/blob/master/mcculw/ul.py
 
 def main():
     """Main entry point for running acquisition (slow capture)."""
-    setup_logging(log_level=config.LOG_LEVEL, log_to_file=config.LOG_TO_FILE)
-
     controller = AcquisitionController()
-    try:
-        # Setup each DAQ with its specific configuration
+    # Setup DAQs
 
-        # Board 0: USB-TEMP-AI
-        # Slave device - no trigger, will be measured when Board 1 triggers
-        controller.setup_daq(
-            board_num=0,
-            name="USB-TEMP-AI",
-            sample_rate=1,  # 1 Hz
-            low_chan=1,
-            high_chan=3,
-            enable_processing=False 
-        )
-        
-        # Board 1: USB-1604HS-2AO
-        # Master trigger device - monitors CH0 for trigger signal
-        controller.setup_daq(
-            board_num=1,
-            name="USB-1604HS-2AO",
-            sample_rate=1_000_000,  # 1 MHz
-            low_chan=0,
-            high_chan=3,  # Read CH0, CH1, CH2, CH3 (4 channels)
-            trigger_channel=0,  # Monitor CH0 for trigger
-            trigger_voltage_high=1.0,  # Rising edge at 1V
-            # trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
-            acquisition_window_us=300,  # 300 µs per channel
-            enable_processing=False
-        )
-        
-        # Suppress console output, keep logging to file, effort to minimize overhead during high-speed acquisition
-        suppress_console_logging()
+    # Board 0 as USB-TEMP-AI
+    controller.setup_daq(
+        board_num=0,
+        name="USB-TEMP-AI",
+        sample_rate=1,
+        low_chan=1,
+        high_chan=3,
+    )
 
-        # Start acquisition with time-gated triggering
-        # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
-        # time_between_points: wait 3 seconds between measurement cycles
-        controller.start_acquisition(
-            restart_scan_each_trigger=False,  # Keep scan running, just check for trigger condition
-            check_buffer_every=0,  # 0 = disabled, >0 = check buffer every N cycles
-            trigger_check_decimation=1,  # Check every sample = 1,000,000 checks/sec
-            time_between_points=0.0, 
-            total_duration_minutes=15,  # Run for 15 minutes (None = run indefinitely)
-        )
-        
-    except KeyboardInterrupt:
-        logger.info("Acquisition interrupted by user")
-    except Exception as e:
-        logger.error(f"Acquisition failed: {e}")
-        raise
-    finally:
-        # Restore console logging if you want to re-enable output after acquisition
-        restore_console_logging()
+    # Board 1 as USB-1604HS-2AO
+    controller.setup_daq(
+        board_num=1,
+        name="USB-1604HS-2AO",
+        sample_rate=1_000_000,
+        low_chan=0,
+        high_chan=3,
+        trigger_channel=0,
+        trigger_voltage_high=1.0,
+        acquisition_window_us=300,
+    )
+
+    # Configuration below only for high speed DAQ USB-1604HS-2AO (board 1)
+    controller.daq_configs[1]['integrate_scan'] = True  # integrate samples over acquisition window to reduce data rate
+    controller.daq_configs[1]['rows_before_write'] = 100  # write to disk every 10k rows to avoid memory issues during long acquisitions
+    # Lower points_per_channel to 100000 for board 1
+    controller.daq_configs[1]['points_per_channel'] = 100000
+    # Explicitly set ai_range and update device config
+    from mcculw.enums import ULRange
+    controller.daq_configs[1]['ai_range'] = ULRange.BIP10VOLTS
+    controller.daq_configs[1]['device'].configure_scan(
+        ai_range=controller.daq_configs[1]['ai_range']
+    )
+    
+    # Start acquisition
+    controller.start_acquisition(
+        restart_scan_each_trigger=False,
+        check_buffer_every=0,
+        trigger_check_decimation=1,
+        time_between_points=0.0,
+        total_duration_minutes=1,
+        max_rows_in_memory=10000000 # number of rows to have available for scanning data into
+    )
 
 if __name__ == '__main__':
     main()

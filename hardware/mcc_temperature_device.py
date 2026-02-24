@@ -9,9 +9,7 @@ from typing import List
 from mcculw import ul
 from mcculw.enums import ScanOptions, Status, TempScale
 from mcculw.device_info import DaqDeviceInfo
-from utils.logging_setup import get_logger
 
-logger = get_logger(__name__)
 
 
 class MCCTemperatureDevice:
@@ -60,7 +58,7 @@ class MCCTemperatureDevice:
         self.points_per_channel = None
         self.total_count = None
         
-        logger.info(f"Temperature device initialized: {self.info.product_name} (Board {board_num})")
+        # print(f"Temperature device initialized: {self.info.product_name} (Board {board_num})")
     
     def start_scan(self, 
                    low_chan: int = 0,
@@ -82,6 +80,7 @@ class MCCTemperatureDevice:
             options: Scan options (stored for reference)
         """
         if self.is_scanning:
+            print("Device is already scanning")
             raise Exception("Device is already scanning")
         
         # Save parameters
@@ -99,6 +98,7 @@ class MCCTemperatureDevice:
         # Allocate buffer for data (use scaled_win_buf_alloc for doubles)
         self.memhandle = ul.scaled_win_buf_alloc(self.total_count)
         if not self.memhandle:
+            print("Failed to allocate memory buffer")
             raise Exception("Failed to allocate memory buffer")
         
         # Convert memhandle to ctypes array of doubles
@@ -110,12 +110,12 @@ class MCCTemperatureDevice:
             self.current_count = 0
             self.last_read_index = -self.num_chans
         
-        logger.info(f"Starting temperature scan on Board {self.board_num}")
-        logger.info(f"  Channels: {low_chan}-{high_chan}")
-        logger.info(f"  Rate: {rate} Hz")
-        logger.info(f"  Points per channel: {points_per_channel}")
-        logger.info(f"  Total points: {self.total_count}")
-        logger.info(f"  Scale: {temp_scale.name}")
+        # print(f"Starting temperature scan on Board {self.board_num}")
+        # print(f"  Channels: {low_chan}-{high_chan}")
+        # print(f"  Rate: {rate} Hz")
+        # print(f"  Points per channel: {points_per_channel}")
+        # print(f"  Total points: {self.total_count}")
+        # print(f"  Scale: {temp_scale.name}")
         
         # Start background scanning thread
         self.stop_thread_event.clear()
@@ -123,13 +123,13 @@ class MCCTemperatureDevice:
         self.is_scanning = True
         self.scan_thread.start()
         
-        logger.info("Temperature scan started in background thread")
+        # print("Temperature scan started in background thread")
     
     def _scan_thread_function(self):
         """Background thread function that continuously polls temperature values."""
         scan_interval = 1.0 / self.rate if self.rate > 0 else 0.1
         
-        logger.debug(f"Background scan thread started, interval: {scan_interval:.3f}s")
+        # print(f"Background scan thread started, interval: {scan_interval:.3f}s")
         
         # Keep reading continuously
         while not self.stop_thread_event.is_set():
@@ -143,16 +143,14 @@ class MCCTemperatureDevice:
                 chan = self.low_chan + chan_offset
                 try:
                     temp_value = ul.t_in(self.board_num, chan, self.temp_scale)
-                    
                     # Store in buffer (wrap around when full)
                     with self.data_lock:
                         buffer_index = self.current_count % self.total_count
                         self.ctypes_array[buffer_index] = temp_value
                         self.current_count += 1
                         self.current_index = buffer_index
-                            
                 except Exception as e:
-                    logger.error(f"Error reading temperature from channel {chan}: {e}")
+                    print(f"Error reading temperature from channel {chan} on board {self.board_num}: {e}")
             
             # Sleep to maintain desired sample rate
             elapsed = time.time() - scan_start_time
@@ -160,15 +158,15 @@ class MCCTemperatureDevice:
             if sleep_time > 0 and not self.stop_thread_event.is_set():
                 self.stop_thread_event.wait(sleep_time)
         
-        logger.debug("Background scan thread finished")
+        # print("Background scan thread finished")
     
     def stop_scan(self):
         """Stop the background scan thread and free resources."""
         if not self.is_scanning:
-            logger.warning("No scan to stop")
+            print("No scan to stop")
             return
         
-        logger.info(f"Stopping temperature scan on Board {self.board_num}")
+        # print(f"Stopping temperature scan on Board {self.board_num}")
         
         # Signal thread to stop
         self.stop_thread_event.set()
@@ -177,7 +175,7 @@ class MCCTemperatureDevice:
         if self.scan_thread and self.scan_thread.is_alive():
             self.scan_thread.join(timeout=2.0)
             if self.scan_thread.is_alive():
-                logger.warning("Scan thread did not stop within timeout")
+                print("Scan thread did not stop within timeout")
         
         # Free the buffer
         if self.memhandle:
@@ -186,7 +184,7 @@ class MCCTemperatureDevice:
         
         self.is_scanning = False
         self.ctypes_array = None
-        logger.info("Temperature scan stopped")
+        # print("Temperature scan stopped")
     
     def get_status(self):
         """
@@ -266,7 +264,7 @@ class MCCTemperatureDevice:
             )
             return temp_value
         except Exception as e:
-            logger.error(f"Error reading temperature from channel {channel}: {e}")
+            print(f"Error reading temperature from channel {channel}: {e}")
             raise
     
     def read_buffer_data(self, start_index: int = 0, count: int = None) -> list:
@@ -281,6 +279,7 @@ class MCCTemperatureDevice:
             List of temperature values
         """
         if not self.is_scanning or not self.ctypes_array:
+            print("No active scan or buffer available")
             raise Exception("No active scan or buffer available")
         
         status, curr_count, curr_index = self.get_status()

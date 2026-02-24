@@ -7,10 +7,6 @@ from mcculw import ul
 from mcculw.device_info import DaqDeviceInfo
 from mcculw.ul import ULError
 
-from utils.logging_setup import get_logger
-
-logger = get_logger(__name__)
-
 
 class DeviceManager:
     """
@@ -22,7 +18,6 @@ class DeviceManager:
         """Initialize the device manager."""
         self.connected_devices: Dict[int, object] = {}  # board_num -> device object
         self.device_info: Dict[int, DaqDeviceInfo] = {}  # board_num -> DaqDeviceInfo
-        logger.info("Device Manager initialized")
     
     def discover_devices(self) -> List[Tuple[int, str, str]]:
         """
@@ -46,15 +41,14 @@ class DeviceManager:
                             daq_dev_info.product_name,
                             daq_dev_info.unique_id
                         ))
-                        logger.info(f"Discovered: {daq_dev_info.product_name} "
-                                  f"(ID: {daq_dev_info.unique_id}) on board {board_num}")
+
                 except ULError:
                     # No device at this board number, continue
                     continue
         except Exception as e:
-            logger.error(f"Error during device discovery: {e}")
+            print(f"Error during device discovery: {e}")
         
-        logger.info(f"Discovery complete. Found {len(discovered)} device(s)")
+        print(f"Discovery complete. Found {len(discovered)} device(s)")
         return discovered
     
     def connect_mcc_device(self, board_num: int = 0) -> object:
@@ -77,7 +71,7 @@ class DeviceManager:
         try:
             # Check if already connected
             if board_num in self.connected_devices:
-                logger.warning(f"Board {board_num} already connected")
+                print(f"Board {board_num} already connected")
                 return self.connected_devices[board_num]
             
             # Verify device exists by trying to get board name
@@ -95,13 +89,13 @@ class DeviceManager:
             
             if is_temp_device and daq_dev_info.supports_temp_input:
                 device = MCCTemperatureDevice(board_num, daq_dev_info)
-                logger.info(f"Connected to temperature device: {daq_dev_info.product_name}")
+                print(f"Connected to temperature device: {daq_dev_info.product_name}")
             elif daq_dev_info.supports_analog_input:
                 device = MCCDevice(board_num, daq_dev_info)
-                logger.info(f"Connected to analog input device: {daq_dev_info.product_name}")
+                print(f"Connected to analog input device: {daq_dev_info.product_name}")
             elif daq_dev_info.supports_temp_input:
                 device = MCCTemperatureDevice(board_num, daq_dev_info)
-                logger.info(f"Connected to temperature device: {daq_dev_info.product_name}")
+                print(f"Connected to temperature device: {daq_dev_info.product_name}")
             else:
                 raise Exception(f"Device {daq_dev_info.product_name} does not support analog or temperature input")
             
@@ -109,13 +103,13 @@ class DeviceManager:
             self.connected_devices[board_num] = device
             self.device_info[board_num] = daq_dev_info
             
-            logger.info(f"Connected to {daq_dev_info.product_name} "
+            print(f"Connected to {daq_dev_info.product_name} "
                        f"(ID: {daq_dev_info.unique_id}) on board {board_num}")
             
             return device
             
         except Exception as e:
-            logger.error(f"Failed to connect to device on board {board_num}: {e}")
+            print(f"Failed to connect to device on board {board_num}: {e}")
             raise
     
     def setup_daq(self, board_num: int, name: str, sample_rate: int, 
@@ -143,18 +137,18 @@ class DeviceManager:
                 - data: Empty list for data collection
                 - timestamps: Empty list for timestamps
         """
-        logger.info(f"Setting up Board {board_num} ({name})...")
+        # print(f"Setting up Board {board_num} ({name})...")
         
         # Connect to device
         daq = self.connect_mcc_device(board_num=board_num)
-        logger.info(f"  Connected: {daq.info.product_name}")
+        # print(f"  Connected: {daq.info.product_name}")
         
         # Calculate points per channel
         points_per_channel = int(sample_rate * duration_seconds)
         num_channels = high_chan - low_chan + 1
         
-        logger.info(f"  Config: {sample_rate} Hz, Channels {low_chan}-{high_chan} ({num_channels} channels)")
-        logger.info(f"  Expected samples per channel: {points_per_channel}")
+        # print(f"  Config: {sample_rate} Hz, Channels {low_chan}-{high_chan} ({num_channels} channels)")
+        # print(f"  Expected samples per channel: {points_per_channel}")
         
         # Create configuration dictionary
         config = {
@@ -169,7 +163,7 @@ class DeviceManager:
             'timestamps': []
         }
         
-        logger.info(f"  Board {board_num} setup complete")
+        # print(f"  Board {board_num} setup complete")
         
         return config
 
@@ -208,21 +202,21 @@ class DeviceManager:
                 if board_num in self.device_info:
                     del self.device_info[board_num]
                 
-                logger.info(f"Disconnected device on board {board_num}")
+                # print(f"Disconnected device on board {board_num}")
             except Exception as e:
-                logger.error(f"Error disconnecting device on board {board_num}: {e}")
+                print(f"Error disconnecting device on board {board_num}: {e}")
         else:
-            logger.warning(f"No device connected on board {board_num}")
+            print(f"No device connected on board {board_num}")
     
     def disconnect_all(self):
         """Disconnect all connected devices and release resources."""
-        logger.info("Disconnecting all devices...")
+        # print("Disconnecting all devices...")
         board_nums = list(self.connected_devices.keys())
         
         for board_num in board_nums:
             self.disconnect_device(board_num)
         
-        logger.info("All devices disconnected")
+        # print("All devices disconnected")
     
     def get_connected_devices(self) -> Dict[int, str]:
         """

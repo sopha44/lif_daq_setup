@@ -11,10 +11,7 @@ from mcculw import ul
 from mcculw.enums import ScanOptions, FunctionType, Status, ULRange
 from mcculw.device_info import DaqDeviceInfo
 
-from utils.logging_setup import get_logger
 import config
-
-logger = get_logger(__name__)
 
 
 class MCCDevice:
@@ -56,9 +53,6 @@ class MCCDevice:
         self.ai_range = None
         self.points_per_channel = None
         self.total_count = None
-        
-        logger.info(f"MCC Device initialized: {self.info.product_name} "
-                   f"(Board {self.board_num}, {self.ai_info.num_chans} channels)")
     
     def configure_scan(self, 
                       low_chan: Optional[int] = None,
@@ -101,10 +95,6 @@ class MCCDevice:
             # Use BACKGROUND | CONTINUOUS only, convert manually
             self.scan_options = ScanOptions.BACKGROUND | ScanOptions.CONTINUOUS
         
-        logger.info(f"Scan configured: CH{self.low_chan}-{self.high_chan}, "
-                   f"{self.rate} Hz, {self.points_per_channel} pts/ch, "
-                   f"Range: {self.ai_range.name}")
-    
     def start_scan(self,
                    low_chan: Optional[int] = None,
                    high_chan: Optional[int] = None,
@@ -129,8 +119,7 @@ class MCCDevice:
         if self.is_scanning:
             raise Exception("Scan already in progress. Stop current scan first.")
         
-        # Configure scan parameters
-        self.configure_scan(low_chan, high_chan, rate, points_per_channel, ai_range, scan_options)
+        # Scan parameters must be set externally before calling start_scan
         
         try:
             # Allocate buffer based on scan options
@@ -150,6 +139,8 @@ class MCCDevice:
             if not self.memhandle:
                 raise Exception("Failed to allocate memory buffer")
             
+            # Diagnostic print of all arguments
+            print(f"[DEBUG][a_in_scan] board_num={self.board_num}, low_chan={self.low_chan}, high_chan={self.high_chan}, total_count={self.total_count}, rate={self.rate}, ai_range={self.ai_range}, memhandle={self.memhandle}, scan_options={self.scan_options}")
             # Start the background scan
             ul.a_in_scan(
                 self.board_num,
@@ -167,13 +158,9 @@ class MCCDevice:
             # Reset last read index to -1 so first read starts from index 0
             self.last_read_index = -1
             
-            logger.info(f"Background scan started on board {self.board_num}")
-            logger.info(f"  Scan options: {self.scan_options} (CONTINUOUS={ScanOptions.CONTINUOUS in self.scan_options})")
-            logger.info(f"  Buffer size: {self.total_count} samples, Rate: {self.rate} Hz")
-            
             # Give hardware time to start filling buffer before first read
             import time
-            time.sleep(0.01)  # 10ms delay to let buffer fill
+            time.sleep(0.001)  # 1ms delay to let buffer fill
             
         except Exception as e:
             # Clean up buffer if scan failed
@@ -181,7 +168,7 @@ class MCCDevice:
                 ul.win_buf_free(self.memhandle)
                 self.memhandle = None
                 self.ctypes_array = None
-            logger.error(f"Failed to start scan: {e}")
+            print(f"Failed to start scan: {e}")
             raise
     
     def get_status(self) -> Tuple[Status, int, int]:
@@ -203,69 +190,59 @@ class MCCDevice:
         )
         return status, curr_count, curr_index
     
-    def read_latest_data(self) -> Optional[np.ndarray]:
+    def read_latest_data(self, integrate_scan: bool = False) -> Optional[np.ndarray]:
         """
         Read the latest complete channel scan from the buffer.
-        
+        If integrate_scan is True, return the sum of the scan as a single value.
         Returns:
-            numpy array of shape (num_chans,) with latest values, or None if no data
+            numpy array of shape (num_chans,) with latest values, or a single float if integrated, or None if no data
         """
         if not self.is_scanning:
-            logger.warning("No scan in progress")
+            print("No scan in progress")
             return None
-        
         status, curr_count, curr_index = self.get_status()
-        
-        # Check if data is available
         if curr_count == 0:
             return None
-        
-        # Read latest complete scan
         data = []
         for i in range(curr_index, curr_index + self.num_chans):
             if ScanOptions.SCALEDATA in self.scan_options:
-                # Data already in engineering units
                 value = self.ctypes_array[i]
             else:
-                # Convert to engineering units
                 value = ul.to_eng_units(
                     self.board_num,
                     self.ai_range,
                     self.ctypes_array[i]
                 )
             data.append(value)
-        
+        if integrate_scan:
+            return np.sum(data)
         return np.array(data)
     
-    def read_new_data(self) -> List[List[float]]:
+    def read_new_data(self, max_scans_per_read: int = 10_000_000, integrate_scan: bool = False) -> List:
         """
         Read new data since last read. Returns list of scans.
-        Each scan is a list of channel values.
-        Adds debug logging for buffer counts and scan status.
+        Each scan is a list of channel values, or a single integrated value if integrate_scan is True.
+        max_scans_per_read: Maximum number of scans to return (default: 10,000,000)
+        integrate_scan: If True, sum each scan to a single value.
         """
         if not self.is_scanning or not self.ctypes_array:
             return []
 
         status, curr_count, curr_index = self.get_status()
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"[DEBUG] read_new_data: status={status}, curr_count={curr_count}, curr_index={curr_index}, last_read_index={self.last_read_index}, total_count={self.total_count}")
 
         if curr_count == 0:
-            logger.debug("[DEBUG] read_new_data: curr_count == 0, no data yet.")
+            print("[DEBUG] read_new_data: curr_count == 0, no data yet.")
             return []  # No data yet
 
         complete_scans = curr_count // self.num_chans
-        logger.debug(f"[DEBUG] read_new_data: complete_scans={complete_scans}")
         if complete_scans == 0:
-            logger.debug("[DEBUG] read_new_data: complete_scans == 0, no complete scans yet.")
+            print("[DEBUG] read_new_data: complete_scans == 0, no complete scans yet.")
             return []  # No complete scans yet
 
         last_complete_index = (complete_scans * self.num_chans) - 1
-        logger.debug(f"[DEBUG] read_new_data: last_complete_index={last_complete_index}")
 
         if self.last_read_index == last_complete_index:
-            logger.debug("[DEBUG] read_new_data: No new complete scans since last read.")
+            print("[DEBUG] read_new_data: No new complete scans since last read.")
             return []  # No new complete scans
 
         if self.last_read_index == -1:
@@ -279,36 +256,49 @@ class MCCDevice:
             new_samples = last_complete_index - self.last_read_index
             num_new_scans = new_samples // self.num_chans
 
-        MAX_SCANS_PER_READ = 10000
-        if num_new_scans > MAX_SCANS_PER_READ:
-            start_index = last_complete_index - (MAX_SCANS_PER_READ * self.num_chans) + 1
-            num_new_scans = MAX_SCANS_PER_READ
+        if num_new_scans > max_scans_per_read:
+            start_index = last_complete_index - (max_scans_per_read * self.num_chans) + 1
+            num_new_scans = max_scans_per_read
 
-        logger.debug(f"[DEBUG] read_new_data: num_new_scans={num_new_scans}, start_index={start_index}")
         if num_new_scans <= 0:
-            logger.debug("[DEBUG] read_new_data: num_new_scans <= 0, nothing to read.")
             return []
 
-        scans = []
-        for scan_num in range(num_new_scans):
-            scan_data = []
-            for ch_offset in range(self.num_chans):
-                idx = (start_index + scan_num * self.num_chans + ch_offset) % self.total_count
-                if self.scan_options & ScanOptions.SCALEDATA:
-                    value = self.ctypes_array[idx]
-                else:
-                    value = ul.to_eng_units(
-                        self.board_num,
-                        self.ai_range,
-                        self.ctypes_array[idx]
-                    )
-                scan_data.append(value)
-            if len(scan_data) == self.num_chans:
-                scans.append(scan_data)
-
-        self.last_read_index = last_complete_index
-        logger.debug(f"[DEBUG] read_new_data: returning {len(scans)} scans.")
-        return scans
+        if integrate_scan:
+            # Sum each channel across all new scans
+            channel_sums = np.zeros(self.num_chans)
+            for scan_num in range(num_new_scans):
+                for ch_offset in range(self.num_chans):
+                    idx = (start_index + scan_num * self.num_chans + ch_offset) % self.total_count
+                    if self.scan_options & ScanOptions.SCALEDATA:
+                        value = self.ctypes_array[idx]
+                    else:
+                        value = ul.to_eng_units(
+                            self.board_num,
+                            self.ai_range,
+                            self.ctypes_array[idx]
+                        )
+                    channel_sums[ch_offset] += value
+            self.last_read_index = last_complete_index
+            return [channel_sums.tolist()] if num_new_scans > 0 else []
+        else:
+            scans = []
+            for scan_num in range(num_new_scans):
+                scan_data = []
+                for ch_offset in range(self.num_chans):
+                    idx = (start_index + scan_num * self.num_chans + ch_offset) % self.total_count
+                    if self.scan_options & ScanOptions.SCALEDATA:
+                        value = self.ctypes_array[idx]
+                    else:
+                        value = ul.to_eng_units(
+                            self.board_num,
+                            self.ai_range,
+                            self.ctypes_array[idx]
+                        )
+                    scan_data.append(value)
+                if len(scan_data) == self.num_chans:
+                    scans.append(scan_data)
+            self.last_read_index = last_complete_index
+            return scans
     
     def read_buffer_data(self, num_samples: Optional[int] = None) -> Optional[np.ndarray]:
         """
@@ -321,7 +311,7 @@ class MCCDevice:
             numpy array of shape (num_samples, num_chans) or None if no data
         """
         if not self.is_scanning:
-            logger.warning("No scan in progress")
+            print("No scan in progress")
             return None
         
         status, curr_count, curr_index = self.get_status()
@@ -363,29 +353,28 @@ class MCCDevice:
     def stop_scan(self):
         """Stop the background scan and free buffer."""
         if not self.is_scanning:
-            logger.warning("No scan in progress")
+            print("No scan in progress")
             return
         
         try:
             # Stop background operation
             ul.stop_background(self.board_num, FunctionType.AIFUNCTION)
-            logger.info(f"Scan stopped on board {self.board_num}")
+            print(f"Scan stopped on board {self.board_num}")
         except Exception as e:
-            logger.error(f"Error stopping scan: {e}")
+            print(f"Error stopping scan: {e}")
         finally:
             # Free buffer
             if self.memhandle:
                 ul.win_buf_free(self.memhandle)
                 self.memhandle = None
                 self.ctypes_array = None
-            
             self.is_scanning = False
     
     def cleanup(self):
         """Clean up device resources."""
         if self.is_scanning:
             self.stop_scan()
-        logger.info(f"Device cleanup complete for board {self.board_num}")
+        # print(f"Device cleanup complete for board {self.board_num}")
     
     def get_device_info(self) -> dict:
         """
