@@ -1,6 +1,7 @@
 """
 Signal Processor for real-time data processing during acquisition.
 Implements DASYLab-style processing blocks: formulas, triggers, counters, bit logic, relays.
+PLACEHOLDER - DOES NOT WORK
 """
 import numpy as np
 from typing import List, Dict, Any

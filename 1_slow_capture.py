@@ -20,7 +20,7 @@ def main():
             sample_rate=1,  # 1 Hz
             low_chan=1,
             high_chan=3,
-            enable_processing=False 
+            enable_processing=False #PLACEHOLDER - does not work
         )
         
         # Board 1: USB-1604HS-2AO
@@ -35,15 +35,15 @@ def main():
             trigger_voltage_high=1.0,  # Rising edge at 1V
             # trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
             acquisition_window_us=300,  # 300 µs per channel
-            enable_processing=False
+            enable_processing=False #PLACEHOLDER - does not work
         )
         
         # Start acquisition with time-gated triggering
         # trigger_check_decimation: check every Nth sample while ARMED (at 400kHz: 4000 = 100 checks/sec)
         # time_between_points: wait 3 seconds between measurement cycles
         controller.start_acquisition(
-            restart_scan_each_trigger=True,  # Keep scan running, just check for trigger condition
-            check_buffer_every=1000,  # 0 = disabled, >0 = check buffer every N cycles
+            restart_scan_each_trigger=True,  # Stops/Starts scan to ensure buffer clears
+            check_buffer_every=1000,  # 0 = disabled, >0 = check buffer every N cycles, logs buffer fill
             trigger_check_decimation=10,  # Check every 10th sample = 100,000 checks/sec
             time_between_points=30.0,  # Wait 30 seconds between measurement cycles
             total_duration_minutes=120  # Run for 120 minutes, 2 hours (None = run indefinitely)

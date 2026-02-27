@@ -68,30 +68,40 @@ def main():
     # Set acquisition duration
     duration = 10.0  # seconds
     
-    # Setup Board 1: USB-TEMP (temperature acquisition at 2 Hz)
+    # Board 0: USB-TEMP-AI
+    # Slave device - no trigger, will be measured when Board 1 triggers
     controller.setup_daq(
-        board_num=1,              # Board number from InstaCal
-        name="USB-TEMP",          # Descriptive name
-        sample_rate=2,            # Samples per second
-        low_chan=0,               # First channel
-        high_chan=0,              # Last channel (0-0 = channel 0 only)
-        duration_seconds=duration,
-        enable_processing=False   # Disable signal processing for raw data
+        board_num=0,
+        name="USB-TEMP-AI",
+        sample_rate=1,  # 1 Hz
+        low_chan=1,
+        high_chan=3,
+        enable_processing=False #PLACEHOLDER - does not work
     )
     
-    # Setup Board 2: USB-1604HS-2AO (high-speed analog at 100 kHz)
+    # Board 1: USB-1604HS-2AO
+    # Master trigger device - monitors CH0 for trigger signal
     controller.setup_daq(
-        board_num=2,
+        board_num=1,
         name="USB-1604HS-2AO",
-        sample_rate=100000,       # 100 kHz sampling
+        sample_rate=1_000_000,  # 1 MHz
         low_chan=0,
-        high_chan=2,              # Channels 0-2 (3 channels total)
-        duration_seconds=duration,
-        enable_processing=True    # Enable real-time signal processing
+        high_chan=3,  # Read CH0, CH1, CH2, CH3 (4 channels)
+        trigger_channel=0,  # Monitor CH0 for trigger
+        trigger_voltage_high=1.0,  # Rising edge at 1V
+        # trigger_voltage_low=1.0,   # Falling edge (not used in time-gated mode)
+        acquisition_window_us=300,  # 300 µs per channel
+        enable_processing=False #PLACEHOLDER - does not work
     )
-    
+
     # Start acquisition on all configured DAQs
-    controller.start_acquisition(duration_seconds=duration)
+    controller.start_acquisition(
+            restart_scan_each_trigger=True,  # Stops/Starts scan to ensure buffer clears
+            check_buffer_every=1000,  # 0 = disabled, >0 = check buffer every N cycles, logs buffer fill
+            trigger_check_decimation=10,  # Check every 10th sample = 100,000 checks/sec
+            time_between_points=30.0,  # Wait 30 seconds between measurement cycles
+            total_duration_minutes=120  # Run for 120 minutes, 2 hours (None = run indefinitely)
+        )
 ```
 
 2. **Run the acquisition**:
@@ -126,21 +136,33 @@ This runs tests from 1 kHz to 1.33 MHz and reports data loss percentages.
 
 ## Project Structure
 
+
 ```
 lif_daq_setup/
-├── acquisition_controller.py    # Main acquisition orchestrator
-├── device_manager.py             # Device lifecycle management
-├── signal_processor.py           # Real-time signal processing
+├── acquisition_controller.py      # Main acquisition orchestrator
+├── app_gui.py                    # GUI application (PLACEHOLDER)
 ├── config.py                     # Configuration settings
-├── hardware/
-│   ├── mcc_device.py            # Analog input device class
-│   └── mcc_temperature_device.py # Temperature device class
-├── utils/
-│   ├── setup_mcc_path.py        # MCC DLL path configuration
-│   ├── logging_setup.py         # Logging configuration
-│   └── benchmark_daq_performance.py # Performance testing
-├── data/                         # Output directory for CSV files
-└── references/                   # Example code and documentation
+├── device_manager.py             # Device lifecycle management
+├── signal_processor.py           # Real-time signal processing (PLACEHOLDER)
+├── 1_slow_capture.py             # Primary acquisition script (slow capture)
+├── requirements.txt              # Python dependencies
+├── README.md                     # Project documentation
+├── hardware/                     # Device-specific implementations
+│   ├── mcc_device.py             # Analog input device class (USB-1604)
+│   ├── mcc_temperature_device.py # Temperature device class (USB-TEMP)
+│   └── __init__.py               # Hardware package init
+├── utils/                        # Utility scripts for analysis, setup, and diagnostics
+│   ├── 1_analysis_combine_csv.py           # Combine DAQ CSVs into merged file
+│   ├── 2_area_calculate_from_combined.py   # Calculate area from merged CSVs
+│   ├── 3_analysis_create_plots.py          # Generate summary plots from processed data
+│   ├── 4_compare_multiple_runs_plots.py    # Compare multiple processed runs visually
+│   ├── benchmark_daq_performance.py        # DAQ performance benchmarking
+│   ├── logging_setup.py                   # Logging configuration utilities
+│   ├── setup_mcc_path.py                  # MCC DLL path setup
+│   ├── test_read_board1.py                # Board 1 analog input test script
+│   └── __init__.py                        # Utils package init
+├── data/                          # Output directory for CSV files (not tracked in git)
+│   └── ...                        # Timestamped folders and output files
 ```
 
 ## Configuration
@@ -148,7 +170,7 @@ lif_daq_setup/
 Edit `config.py` to customize:
 - Data output folder location
 - Logging level and file output
-- Device-specific settings
+- Device-specific settings (no need to change if declared explicitly in measurement scripts)
 
 ## Troubleshooting
 
@@ -156,35 +178,26 @@ Edit `config.py` to customize:
 - Ensure InstaCal shows the device as connected and functional
 - Verify the `board_num` matches the number assigned in InstaCal
 - Check USB connections and drivers
+- Voltage readings can also be checked in InstaCal to make sure signal are read
 
 ### Data loss at high sample rates
+
 - Reduce sample rate or number of channels
-- Run the benchmark tool to find your system's maximum capability
-- Ensure no other CPU-intensive programs are running
-- Consider using a faster PC or reducing signal processing overhead
+- Run the benchmark tool to assess your system's maximum capability
+
+### Utilities
+
+The `utils` folder contains helpful scripts and modules for data analysis, diagnostics, and setup:
+
+- **1_analysis_combine_csv.py**: Combines temperature and data DAQ CSVs from a run into a single merged file with aligned metadata.
+- **2_area_calculate_from_combined.py**: Processes merged CSVs to calculate area under signal curves and filter outliers for each batch.
+- **3_analysis_create_plots.py**: Generates summary plots (temperature and area) from processed CSV files for quick visualization.
+- **4_compare_multiple_runs_plots.py**: Lets you select and compare multiple processed runs, overlaying plots for visual analysis. Currently made to select 3 processed data files into a large plot of 4 data plots with 3 rows.
+- **benchmark_daq_performance.py**: Benchmarks DAQ sample rates and buffer performance, reporting data loss and throughput at different speeds. Used as high level assessment of CPU performance to SCAN (DAQ) and READ (clear DAQ buffer into PC memory) continuously.
+- **test_read_board1.py**: Simple script to continuously read and print analog input values from Board 1 for hardware diagnostics.
 
 ### Temperature device issues
 - USB-TEMP only supports software-based scanning (not hardware background scan)
 - Keep sample rates low (typically 1-10 Hz) for temperature measurements
 - Verify thermocouple type matches configuration in InstaCal
 
-### Signal processing slowing acquisition
-- Set `enable_processing=False` for high-speed acquisitions (>100 kHz)
-- Optimize processing code in `signal_processor.py` using NumPy vectorization
-- Reduce batch processing complexity for real-time performance
-
-## Performance Notes
-
-Based on benchmarking with USB-1604HS-2AO:
-- **1-50 kHz**: Excellent performance (>98% data capture)
-- **100 kHz**: Very good performance (~99.4% data capture)
-- **>250 kHz**: Actual rate plateaus at ~175 kHz due to USB/hardware limitations
-- **With signal processing**: Recommended maximum 100 kHz
-
-## License
-
-This project uses the MCC Universal Library, which requires appropriate licensing from Measurement Computing.
-
-## Support
-
-For DAQ hardware issues, consult Measurement Computing documentation and support.
